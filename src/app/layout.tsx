@@ -17,7 +17,7 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "KlienFlow — Google Maps Scraper",
   description:
-    "Ambil SEMUA data bisnis dari Google Maps (nama, alamat, telepon, rating, jam buka) berdasarkan kata kunci & kota, lalu ekspor ke Excel/CSV.",
+    "Ambil SEMUA data bisnis dari Google Maps (nama, kategori, alamat lengkap, telepon, website, email, sosmed, rating & ulasan, jam buka, koordinat) berdasarkan kata kunci & kota, verifikasi WhatsApp, lalu ekspor ke Excel/CSV.",
   keywords: [
     "Google Maps Scraper",
     "scrape Google Maps",

@@ -1,6 +1,6 @@
 # MapMiner / KlienFlow — Google Maps Scraper
 
-Ambil data bisnis dari Google Maps (nama, alamat, telepon, rating, jam buka, email, sosmed) berdasarkan kata kunci & kota, verifikasi WhatsApp, lalu ekspor ke Excel/CSV/JSON/peta HTML — plus kirim penawaran massal via WhatsApp.
+Ambil data bisnis dari Google Maps (nama, kategori, alamat lengkap, telepon, website, email, sosmed IG/FB/TikTok, rating & jumlah ulasan, jam buka, koordinat, status operasional, link Google Maps) berdasarkan kata kunci & kota, verifikasi WhatsApp, lalu ekspor ke Excel/CSV/JSON/peta HTML — plus kirim penawaran massal via WhatsApp.
 
 ## Cara Menjalankan (komputer baru sekalipun)
 

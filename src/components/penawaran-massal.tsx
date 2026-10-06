@@ -321,6 +321,8 @@ export default function PenawaranMassal({ waStatus, waChecked = true, onOpenWa }
   const stopRef = useRef(false);
   const pauseRef = useRef(false);
   const skipRef = useRef(false); // lewati jeda berjalan
+  const longPauseAccumRef = useRef(0);   // total detik istirahat panjang (batch) yang sudah berlalu — dikeluarkan dari hitungan pace
+  const longPauseStartRef = useRef<number | null>(null); // mulai istirahat panjang yang sedang berjalan
 
   // muat preferensi tersimpan SETELAH mount — render pertama harus identik dgn SSR.
   // persist ditahan sampai load selesai agar nilai default tidak menimpa yang tersimpan.
@@ -408,16 +410,17 @@ export default function PenawaranMassal({ waStatus, waChecked = true, onOpenWa }
   const pMaxNum = Math.max(pMinNum, Math.floor(Number(batchPauseMax) || DEFAULT_BATCH_PAUSE_MAX));
   const avgGap = (Math.max(3, Number(delayMin) || 8) + Math.max(3, Number(delayMax) || 20)) / 2;
   const avgBatchPause = ((pMinNum + pMaxNum) / 2) * 60;
-  // pesan lanjutan menggandakan jumlah pesan per penerima + jeda singkatnya
   const followUpMsg = followUp.trim();
-  const totalMsgs = queue.length * (followUpMsg ? 2 : 1);
   const avgFollowUp = (FOLLOW_UP_DELAY_MIN_S + FOLLOW_UP_DELAY_MAX_S) / 2;
-  const batchPauses = everyNum > 0 && totalMsgs > 1 ? Math.floor((totalMsgs - 1) / everyNum) : 0;
+  // istirahat panjang dihitung per NOMOR penerima (bukan per pesan) — pesan
+  // lanjutan tidak menambah hitungan, sama seperti logika pengiriman
+  const batchPauses = everyNum > 0 && queue.length > 1 ? Math.floor((queue.length - 1) / everyNum) : 0;
   // estimasi juga mencakup durasi simulasi mengetik per pesan
   const typingS = (len: number) => Math.min(TYPING_CAP_S, TYPING_BASE_S + (len * TYPING_MS_PER_CHAR) / 1000);
+  // per nomor: satu jeda antar-nomor + simulasi ketik pesan utama
+  // (+ pesan lanjutan: jeda singkatnya + simulasi ketiknya)
   const estSeconds =
-    totalMsgs * avgGap +
-    queue.length * (typingS(template.length) + (followUpMsg ? typingS(followUpMsg.length) : 0)) +
+    queue.length * (avgGap + typingS(template.length) + (followUpMsg ? avgFollowUp + typingS(followUpMsg.length) : 0)) +
     batchPauses * avgBatchPause;
   const estLabel =
     estSeconds >= 5400 ? `${(estSeconds / 3600).toFixed(1).replace(".", ",")} jam`
@@ -435,9 +438,14 @@ export default function PenawaranMassal({ waStatus, waChecked = true, onOpenWa }
   }, [sending]);
   const elapsedS = startedAt ? Math.max(0, Math.floor((Date.now() - startedAt) / 1000)) : 0;
   const progressFrac = queue.length > 0 ? Math.min(1, progressIdx / queue.length) : 0;
-  // sisa waktu dari kecepatan aktual; sebelum ada progres → pakai estimasi konfigurasi
+  // pace dihitung dari waktu AKTIF (istirahat panjang batch dikeluarkan) agar
+  // angka "sisa" tidak melonjak saat pengiriman sedang istirahat
+  const longPauseActiveS = longPauseStartRef.current ? Math.floor((Date.now() - longPauseStartRef.current) / 1000) : 0;
+  const activeS = Math.max(0, elapsedS - longPauseAccumRef.current - longPauseActiveS);
+  // sisa waktu dari kecepatan aktif aktual (+ sisa istirahat yang sedang berjalan);
+  // sebelum ada progres → pakai estimasi konfigurasi
   const etaS = progressIdx > 0 && progressIdx < queue.length
-    ? Math.round((elapsedS / progressIdx) * (queue.length - progressIdx))
+    ? Math.round((activeS / progressIdx) * (queue.length - progressIdx)) + (longPauseStartRef.current ? longLeft : 0)
     : estSeconds;
 
   // tombol "Default": menonjol hanya ketika pengaturan berbeda dari bawaan
@@ -524,6 +532,8 @@ export default function PenawaranMassal({ waStatus, waChecked = true, onOpenWa }
     pauseRef.current = false;
     stopRef.current = false;
     skipRef.current = false;
+    longPauseAccumRef.current = 0;
+    longPauseStartRef.current = null;
     setLongLeft(0);
     setSentCount(0);
     setFailCount(0);
@@ -532,7 +542,7 @@ export default function PenawaranMassal({ waStatus, waChecked = true, onOpenWa }
     let sent = 0;
     let failed = 0;
     let idx = 0;
-    let batchSent = 0; // terkirim dalam batch berjalan (istirahat tiap BATCH_EVERY)
+    let batchSent = 0; // NOMOR terkirim dalam batch berjalan — istirahat panjang tiap N nomor (pesan lanjutan tidak dihitung)
 
     for (; idx < queue.length; idx++) {
       if (stopRef.current) break;
@@ -555,20 +565,16 @@ export default function PenawaranMassal({ waStatus, waChecked = true, onOpenWa }
         pushLog({ t: Date.now(), name: r.name || fmtPhone(r.phoneDigits), phone: fmtPhone(r.phoneDigits), ok: false, msg: res.error ?? "gagal" });
       }
 
-      // pesan lanjutan ke chat yang sama — hanya jika pesan pertama berhasil
+      // pesan lanjutan ke chat yang sama — hanya jika pesan pertama berhasil.
+      // TIDAK menambah hitungan batch/sent — istirahat panjang tetap per NOMOR.
       if (followUpMsg && res.ok && !stopRef.current) {
         const fDelay = FOLLOW_UP_DELAY_MIN_S + Math.floor(Math.random() * (FOLLOW_UP_DELAY_MAX_S - FOLLOW_UP_DELAY_MIN_S + 1));
         await waitSecs(fDelay);
         if (!stopRef.current) {
           const res2 = await sendOne(r.phoneDigits, renderTemplate(followUpMsg, r));
           if (res2.ok) {
-            sent++;
-            setSentCount(sent);
-            batchSent++;
             pushLog({ t: Date.now(), name: r.name || fmtPhone(r.phoneDigits), phone: fmtPhone(r.phoneDigits), ok: true, msg: "lanjutan: terkirim" });
           } else {
-            failed++;
-            setFailCount(failed);
             pushLog({ t: Date.now(), name: r.name || fmtPhone(r.phoneDigits), phone: fmtPhone(r.phoneDigits), ok: false, msg: "lanjutan: " + (res2.error ?? "gagal") });
           }
         }
@@ -577,10 +583,11 @@ export default function PenawaranMassal({ waStatus, waChecked = true, onOpenWa }
       // jeda antar pesan / istirahat batch — tidak menunggu setelah penerima terakhir
       const moreLeft = idx < queue.length - 1;
       if (moreLeft && every > 0 && batchSent >= every) {
-        // istirahat panjang setiap N pesan terkirim
+        // istirahat panjang setiap N NOMOR terkirim
         skipRef.current = false;
-        pushLog({ t: Date.now(), name: "istirahat", phone: "", ok: true, msg: `batch ${every} pesan selesai — jeda ${pMin}–${pMax} mnt` });
+        pushLog({ t: Date.now(), name: "istirahat", phone: "", ok: true, msg: `batch ${every} nomor selesai — jeda ${pMin}–${pMax} mnt` });
         const pause = pMin * 60 + Math.floor(Math.random() * ((pMax - pMin) * 60 + 1));
+        longPauseStartRef.current = Date.now();
         let s = pause;
         while (s > 0) {
           if (stopRef.current || skipRef.current) break;
@@ -589,6 +596,8 @@ export default function PenawaranMassal({ waStatus, waChecked = true, onOpenWa }
           await sleep(1000);
           s--;
         }
+        longPauseAccumRef.current += Math.round((Date.now() - (longPauseStartRef.current ?? Date.now())) / 1000);
+        longPauseStartRef.current = null;
         setLongLeft(0);
         skipRef.current = false;
         batchSent = 0;
@@ -885,7 +894,7 @@ export default function PenawaranMassal({ waStatus, waChecked = true, onOpenWa }
                 <Label className="text-xs">Istirahat otomatis</Label>
                 <div className="grid grid-cols-3 gap-2">
                   <div className="space-y-1">
-                    <Label htmlFor="batchEvery" className="text-xs text-muted-foreground">setiap (pesan)</Label>
+                    <Label htmlFor="batchEvery" className="text-xs text-muted-foreground">setiap (nomor)</Label>
                     <Input id="batchEvery" type="number" min={0} max={50} value={batchEvery} disabled={sending}
                       onChange={(e) => setBatchEvery(e.target.value)}
                       onBlur={() => setBatchEvery(clampInputNum(batchEvery, 0, 50))}
@@ -908,7 +917,7 @@ export default function PenawaranMassal({ waStatus, waChecked = true, onOpenWa }
                 </div>
                 <p className="text-xs leading-relaxed text-muted-foreground">
                   {everyNum > 0
-                    ? <>Setelah <b>{everyNum} pesan terkirim</b>, pengiriman berhenti dulu <b>{pMinNum}–{pMaxNum} menit</b> (acak) sebelum lanjut ke nomor berikutnya. Isi 0 di &ldquo;setiap&rdquo; untuk mematikan.</>
+                    ? <>Setelah <b>{everyNum} nomor terkirim</b> (pesan utama + lanjutannya selesai), pengiriman berhenti dulu <b>{pMinNum}–{pMaxNum} menit</b> (acak) sebelum lanjut ke nomor berikutnya. Isi 0 di &ldquo;setiap&rdquo; untuk mematikan.</>
                     : "Istirahat otomatis mati — isi angka di kolom \u201csetiap\u201d untuk mengaktifkan."}
                 </p>
               </div>
@@ -934,7 +943,7 @@ export default function PenawaranMassal({ waStatus, waChecked = true, onOpenWa }
               </div>
               {queue.length > 0 && (
                 <div className="text-xs text-muted-foreground flex items-center gap-1.5">
-                  <Clock className="h-3.5 w-3.5 shrink-0" /> Estimasi total ±{estLabel} ({everyNum > 0 ? `jeda ${delayMin}–${delayMax} dtk · istirahat ${pMinNum}–${pMaxNum} mnt tiap ${everyNum} terkirim` : `jeda ${delayMin}–${delayMax} dtk`}{followUpMsg ? ` · lanjutan ${FOLLOW_UP_DELAY_MIN_S}–${FOLLOW_UP_DELAY_MAX_S} dtk` : ""})
+                  <Clock className="h-3.5 w-3.5 shrink-0" /> Estimasi total ±{estLabel} ({everyNum > 0 ? `jeda ${delayMin}–${delayMax} dtk · istirahat ${pMinNum}–${pMaxNum} mnt tiap ${everyNum} nomor` : `jeda ${delayMin}–${delayMax} dtk`}{followUpMsg ? ` · lanjutan ${FOLLOW_UP_DELAY_MIN_S}–${FOLLOW_UP_DELAY_MAX_S} dtk` : ""})
                 </div>
               )}
 

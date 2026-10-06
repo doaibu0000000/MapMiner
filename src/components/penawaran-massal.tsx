@@ -114,8 +114,8 @@ const FOLLOW_UP_DELAY_MAX_S = 15;  // detik
 
 // simulasi mengetik di layanan (durasi per pesan — sinkron dengan wa-checker)
 const TYPING_BASE_S = 0.8;
-const TYPING_MS_PER_CHAR = 37.5; // 25–50 ms/karakter (acak di layanan)
-const TYPING_CAP_S = 20;
+const TYPING_MS_PER_CHAR = 30; // 20–40 ms/karakter (acak di layanan) — rata-rata 30
+const TYPING_CAP_S = 10;
 const LS_DELAY = "mapminer_penawaran_delay";
 const LS_SENT = "mapminer_wa_sent"; // catatan nomor terkirim per pesan
 
@@ -318,6 +318,15 @@ export default function PenawaranMassal({ waStatus, waChecked = true, onOpenWa }
   const [failCount, setFailCount] = useState(0);
   const [logs, setLogs] = useState<SendLog[]>([]);
   const [progressIdx, setProgressIdx] = useState(0); // 0 = belum mulai
+  // tab disembunyikan saat mengirim → browser memperlambat timer; tampilkan peringatan
+  const [tabHidden, setTabHidden] = useState(false);
+  useEffect(() => {
+    if (!sending) { setTabHidden(false); return; }
+    const upd = () => setTabHidden(document.visibilityState === "hidden");
+    upd();
+    document.addEventListener("visibilitychange", upd);
+    return () => document.removeEventListener("visibilitychange", upd);
+  }, [sending]);
   const stopRef = useRef(false);
   const pauseRef = useRef(false);
   const skipRef = useRef(false); // lewati jeda berjalan
@@ -470,7 +479,9 @@ export default function PenawaranMassal({ waStatus, waChecked = true, onOpenWa }
         method: "POST",
         headers: { "Content-Type": "application/json" },
         // typing: tampilkan status "mengetik…" manusiawi di chat penerima sebelum pesan terkirim
+        // timeout 90 dtk — sesi WhatsApp yang tidak sehat bisa membuat kirim menggantung
         body: JSON.stringify({ number, message, typing: true }),
+        signal: AbortSignal.timeout(90_000),
       });
       const data = await resp.json().catch(() => null);
       return data?.ok ? { ok: true } : { ok: false, error: data?.error ?? `HTTP ${resp.status}` };
@@ -481,15 +492,18 @@ export default function PenawaranMassal({ waStatus, waChecked = true, onOpenWa }
 
   const pushLog = (l: SendLog) => setLogs((prev) => [l, ...prev].slice(0, 300));
 
-  // jeda berdetik yang bisa dijeda / dilewati / dihentikan kapan pun
+  // jeda berdetik yang bisa dijeda / dilewati / dihentikan kapan pun.
+  // DITUNGGU dengan TENGGAT WAKTU MUTLAK (bukan loop per-detik): browser
+  // memperlambat timer di tab latar belakang dan loop per-detik MENUMPUK
+  // keterlambatan itu (penyebab jeda membengkak jauh di luar pengaturan);
+  // dengan tenggat mutlak, durasi jeda tetap akurat apa pun kondisi tab.
   const waitSecs = async (secs: number) => {
-    let s = secs;
-    while (s > 0) {
+    const deadline = Date.now() + secs * 1000;
+    while (Date.now() < deadline) {
       if (stopRef.current || skipRef.current) break;
-      if (pauseRef.current) { await sleep(500); continue; }
-      setCountdown(s);
-      await sleep(1000);
-      s--;
+      if (pauseRef.current) { await sleep(300); continue; }
+      setCountdown(Math.ceil((deadline - Date.now()) / 1000));
+      await sleep(Math.min(5000, Math.max(0, deadline - Date.now())));
     }
     setCountdown(0);
     skipRef.current = false;
@@ -588,13 +602,13 @@ export default function PenawaranMassal({ waStatus, waChecked = true, onOpenWa }
         pushLog({ t: Date.now(), name: "istirahat", phone: "", ok: true, msg: `batch ${every} nomor selesai — jeda ${pMin}–${pMax} mnt` });
         const pause = pMin * 60 + Math.floor(Math.random() * ((pMax - pMin) * 60 + 1));
         longPauseStartRef.current = Date.now();
-        let s = pause;
-        while (s > 0) {
+        // tenggat mutlak — kebal throttle timer tab latar belakang
+        const longDeadline = Date.now() + pause * 1000;
+        while (Date.now() < longDeadline) {
           if (stopRef.current || skipRef.current) break;
-          if (pauseRef.current) { await sleep(500); continue; }
-          setLongLeft(s);
-          await sleep(1000);
-          s--;
+          if (pauseRef.current) { await sleep(300); continue; }
+          setLongLeft(Math.ceil((longDeadline - Date.now()) / 1000));
+          await sleep(Math.min(30000, Math.max(0, longDeadline - Date.now())));
         }
         longPauseAccumRef.current += Math.round((Date.now() - (longPauseStartRef.current ?? Date.now())) / 1000);
         longPauseStartRef.current = null;
@@ -944,6 +958,13 @@ export default function PenawaranMassal({ waStatus, waChecked = true, onOpenWa }
               {queue.length > 0 && (
                 <div className="text-xs text-muted-foreground flex items-center gap-1.5">
                   <Clock className="h-3.5 w-3.5 shrink-0" /> Estimasi total ±{estLabel} ({everyNum > 0 ? `jeda ${delayMin}–${delayMax} dtk · istirahat ${pMinNum}–${pMaxNum} mnt tiap ${everyNum} nomor` : `jeda ${delayMin}–${delayMax} dtk`}{followUpMsg ? ` · lanjutan ${FOLLOW_UP_DELAY_MIN_S}–${FOLLOW_UP_DELAY_MAX_S} dtk` : ""})
+                </div>
+              )}
+
+              {sending && tabHidden && (
+                <div className="flex items-start gap-1.5 text-xs text-amber-600 dark:text-amber-400">
+                  <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+                  <span>Tab ini di latar belakang — browser memperlambat jeda. Biarkan tab ini tampil agar jeda sesuai pengaturan.</span>
                 </div>
               )}
 

@@ -265,7 +265,9 @@ const server = Bun.serve({
           // simulasi mengetik manusiawi: status "mengetik…" tampil selama durasi yang
           // menyesuaikan panjang pesan (acak); diperbarui tiap ±4 dtk agar indikator
           // tidak mati sebelum pesan dikirim. Gagal simulasi TIDAK membatalkan kirim.
-          const totalMs = Math.min(20_000, 800 + message.length * (25 + Math.random() * 25));
+          // Pangkas maks 10 dtk — mengetik 20 dtk per pesan menambah jeda nyata
+          // di luar pengaturan pengguna tanpa manfaat tambahan yang berarti.
+          const totalMs = Math.min(10_000, 800 + message.length * (20 + Math.random() * 20));
           try {
             const bursts = Math.max(1, Math.ceil(totalMs / 4000));
             await st.sock.sendPresenceUpdate("composing", jid);

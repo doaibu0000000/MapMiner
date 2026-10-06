@@ -98,12 +98,13 @@ function renderTemplate(tpl: string, r: Recipient): string {
 }
 
 const DEFAULT_TEMPLATE =
-  "Assalamualaikum Kak, perkenalkan saya Agung. Izin, saya tadi menemukan {Bisnis} dari Google Maps.\n\n" +
+  "*Assalamualaikum Kak, perkenalkan saya Agung. Izin, saya tadi menemukan {Bisnis} dari Google Maps.*\n\n" +
   "Saya sedang membantu beberapa bisnis agar calon pelanggan dari Google bisa langsung melihat informasi layanan dan menghubungi WhatsApp dalam satu halaman.\n\n" +
   "Saya lihat {Bisnis} punya peluang untuk dibuatkan halaman seperti itu agar informasi bisnisnya lebih mudah diakses calon pelanggan.";
-// v4: ganti template bawaan — kunci localStorage ikut dinaikkan agar template
-// lama yang tersimpan di komputer lain tidak menimpa default baru
-const LS_TEMPLATE = "mapminer_penawaran_template_v4";
+// v5: paragraf pembuka dibungkus *…* — format tebal WhatsApp (klien WA yang
+// me-render-nya tebal). Kunci LS dinaikkan agar template lama yang tersimpan
+// tidak menimpa default baru.
+const LS_TEMPLATE = "mapminer_penawaran_template_v5";
 
 // pesan lanjutan: dikirim ke chat yang sama beberapa detik setelah pesan pertama
 const DEFAULT_FOLLOW_UP = "Saya sudah ada gambaran tampilannya untuk {Bisnis}. Boleh saya kirim contohnya, Kak?";

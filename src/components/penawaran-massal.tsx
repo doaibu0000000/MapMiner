@@ -98,16 +98,16 @@ function renderTemplate(tpl: string, r: Recipient): string {
 }
 
 const DEFAULT_TEMPLATE =
-  "Assalamualaikum Kak, izin. Saya tadi menemukan {Bisnis} dari Google Maps.\n\n" +
-  "Saya sedang membantu beberapa bisnis supaya calon pelanggan dari Google bisa langsung mendapatkan informasi layanan dan WhatsApp dalam satu halaman.\n\n" +
-  "Saya lihat {Bisnis} belum terlihat punya halaman website dari Google Maps.";
-// v3: ganti template bawaan ke token kolom file {Bisnis} — template lama yang
-// tersimpan di localStorage tidak dipakai lagi
-const LS_TEMPLATE = "mapminer_penawaran_template_v3";
+  "Assalamualaikum Kak, perkenalkan saya Agung. Izin, saya tadi menemukan {Bisnis} dari Google Maps.\n\n" +
+  "Saya sedang membantu beberapa bisnis agar calon pelanggan dari Google bisa langsung melihat informasi layanan dan menghubungi WhatsApp dalam satu halaman.\n\n" +
+  "Saya lihat {Bisnis} punya peluang untuk dibuatkan halaman seperti itu agar informasi bisnisnya lebih mudah diakses calon pelanggan.";
+// v4: ganti template bawaan — kunci localStorage ikut dinaikkan agar template
+// lama yang tersimpan di komputer lain tidak menimpa default baru
+const LS_TEMPLATE = "mapminer_penawaran_template_v4";
 
 // pesan lanjutan: dikirim ke chat yang sama beberapa detik setelah pesan pertama
-const DEFAULT_FOLLOW_UP = "Saya ada ide tampilannya untuk {Bisnis}. Boleh saya kirim contohnya?";
-const LS_FOLLOW_UP = "mapminer_penawaran_followup_v2";
+const DEFAULT_FOLLOW_UP = "Saya sudah ada gambaran tampilannya untuk {Bisnis}. Boleh saya kirim contohnya, Kak?";
+const LS_FOLLOW_UP = "mapminer_penawaran_followup_v3";
 const FOLLOW_UP_DELAY_MIN_S = 5;   // detik
 const FOLLOW_UP_DELAY_MAX_S = 15;  // detik
 

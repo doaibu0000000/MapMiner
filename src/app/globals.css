@@ -477,3 +477,27 @@ textarea:focus-visible:not([data-mm-cell]) {
   outline: none !important;
   box-shadow: none !important;
 }
+
+/* Progres pengiriman beranimasi: kilau menyapu sepanjang bar terisi —
+   menandakan proses hidup saat pengiriman WhatsApp berjalan */
+@keyframes kf-send-shimmer {
+  0% { transform: translateX(-130%); }
+  100% { transform: translateX(330%); }
+}
+.kf-send-progress {
+  position: relative;
+  overflow: hidden;
+}
+.kf-send-progress::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 35%;
+  border-radius: 9999px;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.5), transparent);
+  animation: kf-send-shimmer 1.5s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .kf-send-progress::after { animation: none; display: none; }
+}

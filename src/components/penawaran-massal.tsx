@@ -9,7 +9,7 @@ import * as React from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useToast } from "@/hooks/use-toast";
 import {
-  Send, Pause, Play, Square, FastForward,
+  Send, Pause, Play, Square, FastForward, Loader2,
   CheckCircle2, XCircle, AlertTriangle, Clock, RotateCcw,
   FileSpreadsheet, Upload, Trash2, Sheet, ChevronRight, X,
 } from "lucide-react";
@@ -21,7 +21,6 @@ import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
-import { Progress } from "@/components/ui/progress";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
@@ -424,6 +423,22 @@ export default function PenawaranMassal({ waStatus, waChecked = true, onOpenWa }
     : estSeconds >= 90 ? `${Math.round(estSeconds / 60)} mnt`
     : `${Math.round(estSeconds)} dtk`;
 
+  // ---- waktu berjalan & sisa waktu SAAT pengiriman (detik per detik) ----
+  // tick memaksa render ulang tiap 1 dtk selama sending agar jam ikut berjalan.
+  const [startedAt, setStartedAt] = useState<number | null>(null);
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (!sending) return;
+    const t = setInterval(() => setTick((v) => v + 1), 1000);
+    return () => clearInterval(t);
+  }, [sending]);
+  const elapsedS = startedAt ? Math.max(0, Math.floor((Date.now() - startedAt) / 1000)) : 0;
+  const progressFrac = queue.length > 0 ? Math.min(1, progressIdx / queue.length) : 0;
+  // sisa waktu dari kecepatan aktual; sebelum ada progres → pakai estimasi konfigurasi
+  const etaS = progressIdx > 0 && progressIdx < queue.length
+    ? Math.round((elapsedS / progressIdx) * (queue.length - progressIdx))
+    : estSeconds;
+
   // tombol "Default": menonjol hanya ketika pengaturan berbeda dari bawaan
   const settingsChanged =
     delayMin !== DEFAULT_DELAY_MIN ||
@@ -512,6 +527,7 @@ export default function PenawaranMassal({ waStatus, waChecked = true, onOpenWa }
     setSentCount(0);
     setFailCount(0);
     setProgressIdx(0);
+    setStartedAt(Date.now());
     let sent = 0;
     let failed = 0;
     let idx = 0;
@@ -584,6 +600,7 @@ export default function PenawaranMassal({ waStatus, waChecked = true, onOpenWa }
     setSending(false);
     setPaused(false);
     setCountdown(0);
+    setStartedAt(null);
     const stopped = stopRef.current;
     toast({
       title: stopped ? "Pengiriman dihentikan" : "Pengiriman selesai ✅",
@@ -920,6 +937,29 @@ export default function PenawaranMassal({ waStatus, waChecked = true, onOpenWa }
                 </div>
               )}
 
+              {/* saat pengiriman berjalan: bar beranimasi + waktu berjalan & sisa waktu */}
+              {sending && (
+                <div className="space-y-2 rounded-xl border border-emerald-500/25 bg-emerald-500/[0.04] p-3">
+                  <div className="flex items-center justify-between text-xs font-medium">
+                    <span className="flex items-center gap-1.5 text-emerald-600 dark:text-emerald-400">
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      Berjalan {fmtDur(elapsedS)}
+                    </span>
+                    <span className="text-muted-foreground tabular-nums">sisa ±{fmtDur(etaS)}</span>
+                  </div>
+                  <div className="h-2 overflow-hidden rounded-full bg-muted">
+                    <div
+                      className="kf-send-progress h-full rounded-full bg-gradient-to-r from-emerald-500 to-teal-500 transition-[width] duration-700"
+                      style={{ width: `${Math.max(progressFrac * 100, 2)}%` }}
+                    />
+                  </div>
+                  <div className="flex items-center justify-between text-[10px] text-muted-foreground tabular-nums">
+                    <span>{progressIdx} dari {queue.length} penerima terproses</span>
+                    <span>{Math.round(progressFrac * 100)}%</span>
+                  </div>
+                </div>
+              )}
+
               {!sending ? (
                 <Button className="w-full h-11 gap-2 text-base cursor-pointer bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 shadow-lg shadow-emerald-500/20" disabled={!canStart} onClick={() => { void startSend(); }}>
                   <Send className="h-4.5 w-4.5" /> Mulai Kirim {queue.length > 0 ? `(${queue.length})` : ""}
@@ -965,7 +1005,7 @@ export default function PenawaranMassal({ waStatus, waChecked = true, onOpenWa }
         <Card className="pt-3">
           <CardHeader className="pb-3">
             <CardTitle className="flex items-center gap-2 text-base">
-              <Send className="h-4 w-4 text-emerald-500" />
+              {sending ? <Loader2 className="h-4 w-4 animate-spin text-emerald-500" /> : <Send className="h-4 w-4 text-emerald-500" />}
               Progres pengiriman
               {sending && paused && <Badge variant="outline" className="border-amber-500/40 text-amber-600">dijeda</Badge>}
               {sending && !paused && longLeft > 0 && (
@@ -984,7 +1024,23 @@ export default function PenawaranMassal({ waStatus, waChecked = true, onOpenWa }
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
-            <Progress value={queue.length > 0 ? (progressIdx / queue.length) * 100 : 0} className="h-2" />
+            {/* bar beranimasi (shimmer) — bergerak selama proses kirim berjalan */}
+            <div className="h-2 overflow-hidden rounded-full bg-muted">
+              <div
+                className="kf-send-progress h-full rounded-full bg-gradient-to-r from-emerald-500 to-teal-500 transition-[width] duration-700"
+                style={{ width: `${Math.max(queue.length > 0 ? (progressIdx / queue.length) * 100 : 0, 2)}%` }}
+              />
+            </div>
+            {sending && (
+              <div className="flex items-center justify-between text-xs tabular-nums">
+                <span className="font-medium text-emerald-600 dark:text-emerald-400">
+                  {Math.round(queue.length > 0 ? (progressIdx / queue.length) * 100 : 0)}% terproses
+                </span>
+                <span className="text-muted-foreground">
+                  ⏱ {fmtDur(elapsedS)} berjalan · sisa ±{fmtDur(etaS)}
+                </span>
+              </div>
+            )}
             <ScrollArea className="h-56 rounded-xl border border-border/60">
               <div className="p-2 font-mono text-xs space-y-1">
                 {logs.length === 0 ? (

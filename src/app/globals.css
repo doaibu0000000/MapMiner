@@ -1,0 +1,479 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+:root {
+  --radius: 0.625rem;
+  --background: oklch(0.965 0 0); /* abu sangat muda — kartu putih tampak mengapung */
+  --foreground: oklch(0.145 0 0);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.145 0 0);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.145 0 0);
+  --primary: oklch(0.205 0 0);
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.97 0 0);
+  --secondary-foreground: oklch(0.205 0 0);
+  --muted: oklch(0.97 0 0);
+  --muted-foreground: oklch(0.46 0 0);
+  --accent: oklch(0.97 0 0);
+  --accent-foreground: oklch(0.205 0 0);
+  --destructive: oklch(0.577 0.245 27.325);
+  --border: oklch(0.922 0 0);
+  --input: oklch(0.922 0 0);
+  --ring: oklch(0.708 0 0);
+  --chart-1: oklch(0.646 0.222 41.116);
+  --chart-2: oklch(0.6 0.118 184.704);
+  --chart-3: oklch(0.398 0.07 227.392);
+  --chart-4: oklch(0.828 0.189 84.429);
+  --chart-5: oklch(0.769 0.188 70.08);
+  --sidebar: oklch(0.985 0 0);
+  --sidebar-foreground: oklch(0.145 0 0);
+  --sidebar-primary: oklch(0.205 0 0);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.97 0 0);
+  --sidebar-accent-foreground: oklch(0.205 0 0);
+  --sidebar-border: oklch(0.922 0 0);
+  --sidebar-ring: oklch(0.708 0 0);
+}
+
+.dark {
+  --background: oklch(0.145 0 0);
+  --foreground: oklch(0.92 0 0); /* putih lembut — tidak menyilaukan */
+  --card: oklch(0.245 0 0); /* terang jelas dari background (0.145) agar kartu terpisah tegas */
+  --card-foreground: oklch(0.92 0 0);
+  --popover: oklch(0.245 0 0);
+  --popover-foreground: oklch(0.92 0 0);
+  --primary: oklch(0.922 0 0);
+  --primary-foreground: oklch(0.205 0 0);
+  --secondary: oklch(0.269 0 0);
+  --secondary-foreground: oklch(0.92 0 0);
+  --muted: oklch(0.269 0 0);
+  --muted-foreground: oklch(0.735 0 0);
+  --accent: oklch(0.269 0 0);
+  --accent-foreground: oklch(0.92 0 0);
+  --destructive: oklch(0.704 0.191 22.216);
+  --border: oklch(1 0 0 / 14%);
+  --input: oklch(1 0 0 / 15%);
+  --ring: oklch(0.556 0 0);
+  --chart-1: oklch(0.488 0.243 264.376);
+  --chart-2: oklch(0.696 0.17 162.48);
+  --chart-3: oklch(0.769 0.188 70.08);
+  --chart-4: oklch(0.627 0.265 303.9);
+  --chart-5: oklch(0.645 0.246 16.439);
+  --sidebar: oklch(0.225 0 0);
+  --sidebar-foreground: oklch(0.92 0 0);
+  --sidebar-primary: oklch(0.488 0.243 264.376);
+  --sidebar-primary-foreground: oklch(0.92 0 0);
+  --sidebar-accent: oklch(0.269 0 0);
+  --sidebar-accent-foreground: oklch(0.92 0 0);
+  --sidebar-border: oklch(1 0 0 / 10%);
+  --sidebar-ring: oklch(0.556 0 0);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}
+
+/* Custom scrollbar tipis untuk tabel/log/scroll-area */
+.custom-scrollbar::-webkit-scrollbar,
+[data-radix-scroll-area-viewport]::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.custom-scrollbar::-webkit-scrollbar-track,
+[data-radix-scroll-area-viewport]::-webkit-scrollbar-track {
+  background: transparent;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb,
+[data-radix-scroll-area-viewport]::-webkit-scrollbar-thumb {
+  background: hsl(var(--border, 215 20% 90%) / 0.8);
+  border-radius: 999px;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb:hover,
+[data-radix-scroll-area-viewport]::-webkit-scrollbar-thumb:hover {
+  background: hsl(160 84% 30% / 0.55);
+}
+.dark .custom-scrollbar::-webkit-scrollbar-thumb,
+.dark [data-radix-scroll-area-viewport]::-webkit-scrollbar-thumb {
+  background: hsl(215 15% 30%);
+}
+
+/* ---- Pola dekoratif peta (titik grid) untuk hero ---- */
+.map-dot-grid {
+  background-image: radial-gradient(circle, hsl(160 60% 30% / 0.14) 1px, transparent 1px);
+  background-size: 22px 22px;
+}
+.dark .map-dot-grid {
+  background-image: radial-gradient(circle, hsl(160 60% 60% / 0.10) 1px, transparent 1px);
+}
+
+/* ---- Animasi halus ---- */
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.animate-fade-up {
+  animation: fadeUp 0.45s cubic-bezier(0.22, 0.61, 0.36, 1) both;
+}
+@keyframes shimmer {
+  0% { background-position: -400px 0; }
+  100% { background-position: 400px 0; }
+}
+
+/* ---- Tabel hasil: baris zebra halus + hover ---- */
+.result-table tbody tr:nth-child(even) {
+  background-color: hsl(160 25% 96% / 0.75);
+}
+.dark .result-table tbody tr:nth-child(even) {
+  background-color: hsl(0 0% 100% / 0.04);
+}
+.result-table tbody tr {
+  transition: background-color 150ms ease;
+}
+.result-table tbody tr:hover {
+  background-color: hsl(160 84% 40% / 0.07);
+}
+.dark .result-table tbody tr:hover {
+  background-color: hsl(160 84% 50% / 0.09);
+}
+
+/* ---- v8.1: header tabel lebih tegas (hierarki VLM) — semibold + garis bawah emerald ---- */
+.result-table thead th {
+  font-weight: 600;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: hsl(240 4% 32%);
+  border-bottom: 2px solid hsl(160 84% 36% / 0.35);
+  padding-top: 0.6rem;
+  padding-bottom: 0.6rem;
+}
+.dark .result-table thead th {
+  color: hsl(240 5% 78%);
+  border-bottom-color: hsl(160 84% 50% / 0.4);
+}
+/* tombol sort di header ikut semibold */
+.result-table thead th button {
+  font-weight: 600;
+  letter-spacing: inherit;
+  text-transform: inherit;
+}
+
+/* ---- Nomor baris tabel ---- */
+.result-table td:first-child {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- v6: geser halus baris saat hover (umpan balik taktil) ---- */
+.result-table tbody tr {
+  will-change: transform;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .result-table tbody tr:hover {
+    transform: translateX(3px);
+  }
+}
+
+/* ---- v6: baris bisnis tutup permanen diredupkan ---- */
+.result-table tbody tr.row-closed {
+  opacity: 0.55;
+}
+
+/* ---- v6: kilau berjalan pada progress bar saat job running ---- */
+.progress-shimmer > div {
+  position: relative;
+  overflow: hidden;
+}
+.progress-shimmer > div::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent 0%, rgba(255, 255, 255, 0.45) 50%, transparent 100%);
+  animation: shimmer-sweep 1.8s ease-in-out infinite;
+}
+@keyframes shimmer-sweep {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+
+/* ---- v6: cincin fokus konsisten (aksesibilitas keyboard) ---- */
+button:focus-visible,
+a:focus-visible,
+[role="button"]:focus-visible,
+[role="switch"]:focus-visible,
+input:not([data-slot="command-input"]):focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid hsl(160 84% 35% / 0.6);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+/* ---- v6: bar cakupan kata kunci ---- */
+.coverage-bar {
+  background: linear-gradient(90deg, hsl(160 84% 39%), hsl(172 66% 42%));
+}
+
+/* ---- v8: bar aksi massal muncul meluncur naik dari bawah ---- */
+@keyframes bulk-in {
+  from { transform: translateY(110%); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+.animate-bulk-in {
+  animation: bulk-in 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+}
+@media (prefers-reduced-motion: reduce) {
+  .animate-bulk-in { animation: none; }
+}
+
+/* ---- v8: baris terpilih — garis kiri aksen emerald ---- */
+.result-table tbody tr.row-selected {
+  box-shadow: inset 3px 0 0 0 hsl(160 84% 42% / 0.55);
+}
+
+/* ---- v8.1: petunjuk gulir horizontal tabel di layar kecil (bayangan tepi kanan) ---- */
+@media (max-width: 767px) {
+  .table-scroll-hint {
+    position: relative;
+  }
+  .table-scroll-hint::after {
+    content: "";
+    position: absolute;
+    top: 1px;
+    right: 1px;
+    bottom: 1px;
+    width: 34px;
+    pointer-events: none;
+    background:
+      linear-gradient(90deg, transparent, rgba(0, 0, 0, 0.14)),
+      linear-gradient(90deg, transparent, hsl(0 0% 100% / 0.4));
+    border-radius: 0 0.75rem 0.75rem 0;
+    z-index: 20;
+    opacity: 1;
+  }
+  .dark .table-scroll-hint::after {
+    background: linear-gradient(90deg, transparent, rgba(0, 0, 0, 0.45));
+  }
+}
+
+/* ---- v11.1: animasi proses scraping (kartu "Sedang mencari") ---- */
+
+/* kilau berjalan di atas progress bar */
+.mm-progress-shimmer {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  border-radius: inherit;
+  pointer-events: none;
+}
+.mm-progress-shimmer::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 42%;
+  background: linear-gradient(100deg, transparent 0%, rgba(255, 255, 255, 0.55) 50%, transparent 100%);
+  animation: mm-shimmer-sweep 1.6s ease-in-out infinite;
+}
+.dark .mm-progress-shimmer::after {
+  background: linear-gradient(100deg, transparent 0%, rgba(255, 255, 255, 0.28) 50%, transparent 100%);
+}
+@keyframes mm-shimmer-sweep {
+  0% { transform: translateX(-110%); }
+  100% { transform: translateX(280%); }
+}
+
+/* garis cahaya berjalan di tepi atas kartu proses */
+.mm-running-beam {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2.5px;
+  overflow: hidden;
+  pointer-events: none;
+}
+.mm-running-beam::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 34%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, transparent, hsl(160 84% 42%), transparent);
+  animation: mm-beam-run 2.4s ease-in-out infinite;
+}
+@keyframes mm-beam-run {
+  0% { left: -34%; }
+  100% { left: 100%; }
+}
+
+/* angka "tempat ditemukan" membesar halus setiap bertambah */
+.mm-count-pop {
+  animation: mm-count-pop 0.45s cubic-bezier(0.2, 0.9, 0.3, 1.4);
+  display: inline-block;
+}
+@keyframes mm-count-pop {
+  0% { transform: scale(1); }
+  45% { transform: scale(1.22); }
+  100% { transform: scale(1); }
+}
+
+/* Area nomor penerima (Penawaran Massal): tinggi tetap — daftar panjang di-scroll,
+   tidak memanjang mengikuti isi (menimpa field-sizing-content bawaan Textarea) */
+.numbers-textarea {
+  field-sizing: fixed;
+  height: 12rem;
+  min-height: 9rem;
+  overflow-y: auto;
+  resize: vertical;
+}
+
+/* Input angka: sembunyikan spinner naik/turun bawaan browser (Jeda, Istirahat, dst.) */
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type="number"] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+/* Area pesan penawaran (Penawaran Massal): tinggi tetap — teks panjang di-scroll,
+   tidak memanjang mengikuti isi (menimpa field-sizing-content bawaan Textarea) */
+.message-textarea {
+  field-sizing: fixed;
+  height: 12rem;
+  min-height: 8rem;
+  overflow-y: auto;
+  resize: vertical;
+}
+.message-textarea-sm {
+  height: 7rem;
+  min-height: 5rem;
+}
+
+/* Baris placeholder chip: bisa digeser horizontal tapi scrollbar disembunyikan
+   (Firefox: scrollbar-width; Chromium/Safari/Edge: ::-webkit-scrollbar) */
+.no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/* Cegah kedipan pindah tab saat reload: sebelum React hidup, sesuaikan pane
+   yang tampil dengan tab tersimpan (atribut <html> dipasang script awal) */
+html[data-mm-tab="penawaran"] [data-mm-pane="prospek"] { display: none !important; }
+html[data-mm-tab="penawaran"] [data-mm-pane="penawaran"] { display: block !important; }
+
+/* Gaya fokus SATU GARIS untuk semua elemen form (konsisten dgn combobox Kota):
+   abu-abu saat normal → hijau saat aktif; tanpa ring/outline ganda.
+   Dipasang !important agar memenangi sisa kelas ring utilitas apa pun. */
+[data-slot="input"]:focus-visible,
+[data-slot="textarea"]:focus-visible,
+[data-slot="select-trigger"]:focus-visible,
+[data-slot="checkbox"]:focus-visible,
+[data-slot="switch"]:focus-visible {
+  outline: none !important;
+  box-shadow: none !important;
+  border-color: rgba(16, 185, 129, 0.6) !important; /* emerald-500/60 — redup, senada border baris */
+}
+.dark [data-slot="input"]:focus-visible,
+.dark [data-slot="textarea"]:focus-visible,
+.dark [data-slot="select-trigger"]:focus-visible,
+.dark [data-slot="checkbox"]:focus-visible,
+.dark [data-slot="switch"]:focus-visible {
+  border-color: rgba(52, 211, 153, 0.6) !important; /* emerald-400/60 — redup, senada border baris */
+}
+/* field bernilai salah tetap menunjukkan border merah saat fokus */
+[data-slot="input"][aria-invalid="true"]:focus-visible,
+[data-slot="textarea"][aria-invalid="true"]:focus-visible,
+[data-slot="select-trigger"][aria-invalid="true"]:focus-visible {
+  border-color: var(--destructive) !important;
+}
+
+/* v8.2: penanda wajib isi tanpa popup — border merah + getar saat submit kosong */
+@keyframes kf-shake {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-6px); }
+  40% { transform: translateX(6px); }
+  60% { transform: translateX(-4px); }
+  80% { transform: translateX(4px); }
+}
+/* keyframes kembar: class alt bergantian tiap submit ulang agar animasi selalu diputar ulang */
+@keyframes kf-shake-alt {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-6px); }
+  40% { transform: translateX(6px); }
+  60% { transform: translateX(-4px); }
+  80% { transform: translateX(4px); }
+}
+.kf-required {
+  border-color: #ef4444 !important; /* red-500 */
+  box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.18) !important;
+  animation: kf-shake 0.45s ease-in-out;
+}
+.kf-required.kf-alt {
+  animation-name: kf-shake-alt;
+}
+.dark .kf-required {
+  border-color: #f87171 !important; /* red-400 */
+}
+
+/* input polos tanpa data-slot (pencarian riwayat, dsb.) — aturan sama,
+   kecuali sel editor spreadsheet yang sengaja memakai ring inset hijau */
+input:focus-visible:not([data-mm-cell]),
+textarea:focus-visible:not([data-mm-cell]) {
+  outline: none !important;
+  box-shadow: none !important;
+}

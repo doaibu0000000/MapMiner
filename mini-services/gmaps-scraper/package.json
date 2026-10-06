@@ -1,0 +1,13 @@
+{
+  "name": "gmaps-scraper-service",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "bun --hot index.ts",
+    "start": "bun index.ts"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "7.0.0-rc14",
+    "playwright-core": "^1.57.0"
+  }
+}

@@ -11,6 +11,7 @@ echo   * Komputer baru / baru di-clone dari GitHub? Tidak apa-apa.
 echo     Semua kebutuhan dipasang OTOMATIS saat pertama kali
 echo     dijalankan: Bun, Node.js, dependensi, browser Chromium.
 echo     Butuh koneksi internet dan bisa makan waktu 5-10 menit.
+echo     Bila Windows meminta izin administrator (UAC), klik Yes.
 echo.
 echo   * Layanan hanya hidup selama jendela ini terbuka.
 echo     Tutup jendela ini (klik X) = SEMUA layanan ikut mati.
@@ -41,7 +42,7 @@ if errorlevel 1 (
 )
 for /f "delims=" %%v in ('bun --version') do echo [OK] Bun v%%v terpasang.
 
-REM ---- 2) Node.js (dibutuhkan Next.js di port 3000) ----
+REM ---- 2) Node.js (WAJIB: Next.js di port 3000 berjalan di atas Node) ----
 where node >nul 2>&1
 if errorlevel 1 (
     echo [..] Node.js belum terpasang - memasang versi LTS via winget...
@@ -50,12 +51,21 @@ if errorlevel 1 (
 )
 where node >nul 2>&1
 if errorlevel 1 (
-    echo [!!] Node.js belum bisa dipastikan terpasang.
-    echo      Kalau aplikasi web di port 3000 gagal jalan, pasang manual:
-    echo      https://nodejs.org - lalu jalankan start.bat lagi.
-) else (
-    echo [OK] Node.js terpasang.
+    echo [..] winget tidak tersedia/gagal - mengunduh MSI resmi Node.js LTS...
+    powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\install-node.ps1"
+    set "PATH=%PATH%;C:\Program Files\nodejs"
 )
+where node >nul 2>&1
+if errorlevel 1 (
+    echo.
+    echo [!!] Node.js gagal dipasang otomatis.
+    echo      Aplikasi web membutuhkannya. Pasang manual dari https://nodejs.org
+    echo      ^(pilih versi LTS^), lalu jalankan start.bat lagi.
+    echo.
+    pause
+    exit /b 1
+)
+for /f "delims=" %%v in ('node --version') do echo [OK] Node.js %%v terpasang.
 
 REM ---- 3) Dependensi aplikasi Next.js (root) ----
 if not exist "node_modules" (

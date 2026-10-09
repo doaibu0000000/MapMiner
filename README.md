@@ -35,6 +35,7 @@ Jalankan kedua kali dan seterusnya: semua sudah terpasang, layanan langsung meny
 
 ## Catatan
 
+- Butuh Windows 10/11 64-bit. Saat **pertama kali** dijalankan, Windows bisa meminta izin administrator (UAC) untuk memasang Node.js — klik **Yes**.
 - Layanan hanya hidup selama jendela `start.bat` terbuka; menutup jendelanya mematikan semuanya.
 - Kalau Windows SmartScreen menampilkan peringatan saat menjalankan `start.bat`, klik **More info → Run anyway**.
 - Data hasil scraping tersimpan di `mini-services/gmaps-scraper/data/` dan ikut terhapus permanen saat job dihapus dari aplikasi.

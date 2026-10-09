@@ -35,21 +35,6 @@ Jalankan kedua kali dan seterusnya: semua sudah terpasang, layanan langsung meny
 
 ## Catatan
 
-- Butuh Windows 10/11 64-bit. Saat **pertama kali** dijalankan, Windows bisa meminta izin administrator (UAC) untuk memasang Node.js — klik **Yes**.
-- Dialog firewall Windows ("Do you want to allow…") untuk Bun/Node dicegah otomatis: `start.bat` membuat aturan firewall-nya sendiri saat pertama kali dijalankan sebagai Administrator.
-
-### Kalau Windows menolak menjalankan start.bat (Smart App Control)
-
-Windows 11 kadang menampilkan **"Smart App Control blocked a file that may be unsafe"** saat start.bat diklik — ini terjadi karena file hasil unduhan ZIP diberi label "dari internet" dan skrip `.bat` berlabel itu diblokir. Fitur ini tidak punya tombol Allow; pilih salah satu:
-
-1. **Paling cepat:** matikan Smart App Control — *Windows Security → App & browser control → Smart App Control settings → Off* — lalu klik dua kali `start.bat` lagi. (Setelah Off, fitur ini hanya bisa dinyalakan lagi lewat reset Windows.)
-2. **Tanpa mematikan:** klik kanan `start.bat` → *Properties* → centang **Unblock** → OK, lalu jalankan lagi. Lakukan hal sama untuk `stop.bat`.
-3. **Cara developer:** pasang Git lalu `git clone https://github.com/doaibu0000000/MapMiner.git` — file hasil clone tidak berlabel "dari internet" sehingga tidak diblokir.
-4. **Tanpa mematikan & tanpa klik Unblock:** unduh lewat terminal — berkas hasil unduhan `curl`+`tar` tidak diberi label internet, jadi `start.bat` langsung jalan saat diklik. Buka PowerShell, tempel dua baris ini:
-   ```
-   curl -L -o mm.zip https://github.com/doaibu0000000/MapMiner/archive/refs/heads/main.zip
-   tar -xf mm.zip ; cd MapMiner-main ; start start.bat
-   ```
 - Layanan hanya hidup selama jendela `start.bat` terbuka; menutup jendelanya mematikan semuanya.
 - Kalau Windows SmartScreen menampilkan peringatan saat menjalankan `start.bat`, klik **More info → Run anyway**.
 - Data hasil scraping tersimpan di `mini-services/gmaps-scraper/data/` dan ikut terhapus permanen saat job dihapus dari aplikasi.

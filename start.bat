@@ -11,7 +11,6 @@ echo   * Komputer baru / baru di-clone dari GitHub? Tidak apa-apa.
 echo     Semua kebutuhan dipasang OTOMATIS saat pertama kali
 echo     dijalankan: Bun, Node.js, dependensi, browser Chromium.
 echo     Butuh koneksi internet dan bisa makan waktu 5-10 menit.
-echo     Bila Windows meminta izin administrator (UAC), klik Yes.
 echo.
 echo   * Layanan hanya hidup selama jendela ini terbuka.
 echo     Tutup jendela ini (klik X) = SEMUA layanan ikut mati.
@@ -20,7 +19,7 @@ echo ============================================================
 echo.
 
 REM ============================================================
-REM  BOOTSTRAP OTOMATIS - pasang semua kebutuhan bila belum ada
+REM  BOOTSTRAP OTOMATIS — pasang semua kebutuhan bila belum ada
 REM ============================================================
 
 REM ---- 1) Bun (runtime utama semua layanan) ----
@@ -30,9 +29,6 @@ if errorlevel 1 (
     powershell -NoProfile -ExecutionPolicy Bypass -Command "irm bun.sh/install.ps1 | iex"
     set "PATH=%USERPROFILE%\.bun\bin;%PATH%"
 )
-REM Hapus label "dari internet" SEBELUM bun dijalankan pertama kali -
-REM Smart App Control memblokir berkas unduhan yang masih berlabel begitu.
-powershell -NoProfile -Command "Unblock-File -Path '%USERPROFILE%\.bun\bin\bun.exe' -ErrorAction SilentlyContinue" >nul 2>&1
 where bun >nul 2>&1
 if errorlevel 1 (
     echo.
@@ -45,7 +41,7 @@ if errorlevel 1 (
 )
 for /f "delims=" %%v in ('bun --version') do echo [OK] Bun v%%v terpasang.
 
-REM ---- 2) Node.js (WAJIB: Next.js di port 3000 berjalan di atas Node) ----
+REM ---- 2) Node.js (dibutuhkan Next.js di port 3000) ----
 where node >nul 2>&1
 if errorlevel 1 (
     echo [..] Node.js belum terpasang - memasang versi LTS via winget...
@@ -54,59 +50,11 @@ if errorlevel 1 (
 )
 where node >nul 2>&1
 if errorlevel 1 (
-    echo [..] winget tidak tersedia/gagal - mengunduh MSI resmi Node.js LTS...
-    powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\install-node.ps1"
-    set "PATH=%PATH%;C:\Program Files\nodejs"
-)
-where node >nul 2>&1
-if errorlevel 1 (
-    echo.
-    echo [!!] Node.js gagal dipasang otomatis.
-    echo      Aplikasi web membutuhkannya. Pasang manual dari https://nodejs.org
-    echo      ^(pilih versi LTS^), lalu jalankan start.bat lagi.
-    echo.
-    pause
-    exit /b 1
-)
-for /f "delims=" %%v in ('node --version') do echo [OK] Node.js %%v terpasang.
-
-REM ---- 2c) Aturan firewall Windows agar dialog "Allow access" tidak muncul lagi ----
-REM Tiap bun.exe / node.exe yang mulai mendengarkan port memunculkan dialog
-REM firewall bila belum ada aturannya. Aturan dibuat otomatis di sini:
-REM cukup sekali, dan tidak perlu diklik manual lagi di komputer mana pun.
-set "BUN_EXE="
-set "NODE_EXE="
-for /f "delims=" %%p in ('where bun 2^>nul') do if not defined BUN_EXE set "BUN_EXE=%%p"
-for /f "delims=" %%p in ('where node 2^>nul') do if not defined NODE_EXE set "NODE_EXE=%%p"
-if not defined BUN_EXE goto firewall-done
-net session >nul 2>&1
-if errorlevel 1 goto firewall-ask
-netsh advfirewall firewall delete rule name="MapMiner Bun" >nul 2>&1
-netsh advfirewall firewall delete rule name="MapMiner Node" >nul 2>&1
-netsh advfirewall firewall add rule name="MapMiner Bun" dir=in action=allow program="%BUN_EXE%" enable=yes profile=any >nul 2>&1
-netsh advfirewall firewall add rule name="MapMiner Node" dir=in action=allow program="%NODE_EXE%" enable=yes profile=any >nul 2>&1
-goto firewall-done
-:firewall-ask
-netsh advfirewall firewall show rule name="MapMiner Bun" >nul 2>&1
-if not errorlevel 1 goto firewall-done
-echo [..] Menyiapkan izin firewall - klik Yes bila muncul dialog UAC...
-set "FWBAT=%TEMP%\mapminer-firewall.bat"
-> "%FWBAT%" (
-    echo @echo off
-    echo netsh advfirewall firewall delete rule name="MapMiner Bun" ^>nul 2^>^&1
-    echo netsh advfirewall firewall delete rule name="MapMiner Node" ^>nul 2^>^&1
-    echo netsh advfirewall firewall add rule name="MapMiner Bun" dir=in action=allow program="%BUN_EXE%" enable=yes profile=any ^>nul 2^>^&1
-    echo netsh advfirewall firewall add rule name="MapMiner Node" dir=in action=allow program="%NODE_EXE%" enable=yes profile=any ^>nul 2^>^&1
-)
-powershell -NoProfile -Command "Start-Process -FilePath '%FWBAT%' -Verb RunAs -Wait" >nul 2>&1
-del "%FWBAT%" >nul 2>&1
-:firewall-done
-netsh advfirewall firewall show rule name="MapMiner Bun" >nul 2>&1
-if errorlevel 1 (
-    echo [..] Aturan firewall belum terpasang - bila dialog "Allow access"
-    echo      muncul saat layanan menyala, klik Allow.
+    echo [!!] Node.js belum bisa dipastikan terpasang.
+    echo      Kalau aplikasi web di port 3000 gagal jalan, pasang manual:
+    echo      https://nodejs.org - lalu jalankan start.bat lagi.
 ) else (
-    echo [OK] Firewall disiapkan otomatis - dialog "Allow access" tidak muncul lagi.
+    echo [OK] Node.js terpasang.
 )
 
 REM ---- 3) Dependensi aplikasi Next.js (root) ----
@@ -134,7 +82,7 @@ if not exist "mini-services\wa-checker\node_modules" (
     popd
 )
 
-REM ---- 5) Browser Chromium untuk scraper - dilewati bila Chrome/Edge
+REM ---- 5) Browser Chromium untuk scraper — dilewati bila Chrome/Edge
 REM         sudah terpasang di komputer ini (dipakai sebagai cadangan) ----
 set "NEED_BROWSER=1"
 if exist "%LOCALAPPDATA%\ms-playwright" set "NEED_BROWSER=0"

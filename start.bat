@@ -67,6 +67,45 @@ if errorlevel 1 (
 )
 for /f "delims=" %%v in ('node --version') do echo [OK] Node.js %%v terpasang.
 
+REM ---- 2c) Aturan firewall Windows agar dialog "Allow access" tidak muncul lagi ----
+REM Tiap bun.exe / node.exe yang mulai mendengarkan port memunculkan dialog
+REM firewall bila belum ada aturannya. Aturan dibuat otomatis di sini:
+REM cukup sekali, dan tidak perlu diklik manual lagi di komputer mana pun.
+set "BUN_EXE="
+set "NODE_EXE="
+for /f "delims=" %%p in ('where bun 2^>nul') do if not defined BUN_EXE set "BUN_EXE=%%p"
+for /f "delims=" %%p in ('where node 2^>nul') do if not defined NODE_EXE set "NODE_EXE=%%p"
+if not defined BUN_EXE goto firewall-done
+net session >nul 2>&1
+if errorlevel 1 goto firewall-ask
+netsh advfirewall firewall delete rule name="MapMiner Bun" >nul 2>&1
+netsh advfirewall firewall delete rule name="MapMiner Node" >nul 2>&1
+netsh advfirewall firewall add rule name="MapMiner Bun" dir=in action=allow program="%BUN_EXE%" enable=yes profile=any >nul 2>&1
+netsh advfirewall firewall add rule name="MapMiner Node" dir=in action=allow program="%NODE_EXE%" enable=yes profile=any >nul 2>&1
+goto firewall-done
+:firewall-ask
+netsh advfirewall firewall show rule name="MapMiner Bun" >nul 2>&1
+if not errorlevel 1 goto firewall-done
+echo [..] Menyiapkan izin firewall - klik Yes bila muncul dialog UAC...
+set "FWBAT=%TEMP%\mapminer-firewall.bat"
+> "%FWBAT%" (
+    echo @echo off
+    echo netsh advfirewall firewall delete rule name="MapMiner Bun" ^>nul 2^>^&1
+    echo netsh advfirewall firewall delete rule name="MapMiner Node" ^>nul 2^>^&1
+    echo netsh advfirewall firewall add rule name="MapMiner Bun" dir=in action=allow program="%BUN_EXE%" enable=yes profile=any ^>nul 2^>^&1
+    echo netsh advfirewall firewall add rule name="MapMiner Node" dir=in action=allow program="%NODE_EXE%" enable=yes profile=any ^>nul 2^>^&1
+)
+powershell -NoProfile -Command "Start-Process -FilePath '%FWBAT%' -Verb RunAs -Wait" >nul 2>&1
+del "%FWBAT%" >nul 2>&1
+:firewall-done
+netsh advfirewall firewall show rule name="MapMiner Bun" >nul 2>&1
+if errorlevel 1 (
+    echo [..] Aturan firewall belum terpasang - bila dialog "Allow access"
+    echo      muncul saat layanan menyala, klik Allow.
+) else (
+    echo [OK] Firewall disiapkan otomatis - dialog "Allow access" tidak muncul lagi.
+)
+
 REM ---- 3) Dependensi aplikasi Next.js (root) ----
 if not exist "node_modules" (
     echo [..] Memasang dependensi aplikasi - sekali saja, sekitar 1-2 menit...

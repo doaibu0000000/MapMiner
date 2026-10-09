@@ -30,6 +30,9 @@ if errorlevel 1 (
     powershell -NoProfile -ExecutionPolicy Bypass -Command "irm bun.sh/install.ps1 | iex"
     set "PATH=%USERPROFILE%\.bun\bin;%PATH%"
 )
+REM Hapus label "dari internet" SEBELUM bun dijalankan pertama kali -
+REM Smart App Control memblokir berkas unduhan yang masih berlabel begitu.
+powershell -NoProfile -Command "Unblock-File -Path '%USERPROFILE%\.bun\bin\bun.exe' -ErrorAction SilentlyContinue" >nul 2>&1
 where bun >nul 2>&1
 if errorlevel 1 (
     echo.

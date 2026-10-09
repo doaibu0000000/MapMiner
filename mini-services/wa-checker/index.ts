@@ -31,10 +31,11 @@ interface St {
   pairingPhone: string | null;
   failedAttempts: number;
   connectingSince: number;
+  nextRetryAt: number;
 }
 const st: St = {
   sock: null, status: "disconnected", phone: null,
-  pairingCode: null, pairingPhone: null, failedAttempts: 0, connectingSince: 0,
+  pairingCode: null, pairingPhone: null, failedAttempts: 0, connectingSince: 0, nextRetryAt: 0,
 };
 
 const jidToPhone = (jid: string | undefined | null): string | null =>
@@ -49,16 +50,27 @@ function wipeAuth() {
   st.pairingPhone = null;
   st.failedAttempts = 0;
   st.connectingSince = 0;
+  st.nextRetryAt = 0;
   try { rmSync(AUTH_DIR, { recursive: true, force: true }); } catch {}
   console.log("sesi lama tidak valid — auth dibersihkan, siap pairing baru");
 }
 
-/** Sesi tersangkut connecting / gagal berulang = auth basi → bersihkan. */
-function isStale(): boolean {
+/** Koneksi tersangkut lama di "connecting" (socket diam tanpa event — network
+ *  black hole) ≠ sesi mati. Hanya SOCKET-nya yang diputus agar bisa disambung
+ *  ulang; AUTH DIPERTAHANKAN. Menghapus auth hanya karena koneksi macet adalah
+ *  penyebab "WhatsApp keluar sendiri" padahal pengguna tidak pernah logout. */
+function isStuck(): boolean {
   if (st.status === "connected") return false;
-  if (st.failedAttempts >= 3) return true;
-  if (st.status === "connecting" && st.connectingSince > 0 && Date.now() - st.connectingSince > 30_000) return true;
-  return false;
+  return st.status === "connecting" && st.connectingSince > 0 && Date.now() - st.connectingSince > 60_000;
+}
+
+/** Putuskan socket yang macet TANPA menghapus sesi. */
+function dropStuckSocket() {
+  try { st.sock?.end?.(); } catch {}
+  st.sock = null;
+  st.status = "disconnected";
+  st.connectingSince = 0;
+  console.log("koneksi tersangkut — socket diputus (sesi dipertahankan), coba ulang");
 }
 
 async function ensureSocket(): Promise<any> {
@@ -96,6 +108,7 @@ async function ensureSocket(): Promise<any> {
       st.pairingPhone = null;
       st.failedAttempts = 0;
       st.connectingSince = 0;
+      st.nextRetryAt = 0;
       console.log(`terhubung sebagai +${st.phone}`);
     } else if (connection === "close") {
       const code = (lastDisconnect?.error as any)?.output?.statusCode;
@@ -104,12 +117,16 @@ async function ensureSocket(): Promise<any> {
       st.status = "disconnected";
       st.connectingSince = 0;
       if (loggedOut) {
+        // SATU-SATUNYA kondisi penghapusan sesi: server WhatsApp sendiri yang
+        // melepas perangkat ini (perangkat tertaut dilepas dari ponsel / akun
+        // didaftarkan ulang). Selain ini sesi TIDAK PERNAH dihapus.
         console.log("sesi dilogout dari server — auth dibersihkan");
         try { rmSync(AUTH_DIR, { recursive: true, force: true }); } catch {}
         st.phone = null;
         st.pairingCode = null;
         st.pairingPhone = null;
         st.failedAttempts = 0;
+        st.nextRetryAt = 0;
       } else if (st.pairingCode) {
         // jendela pairing berakhir (kode kedaluwarsa / koneksi ditutup server) —
         // kode yang tampil sudah MATI: bersihkan agar UI tidak menampilkannya lagi
@@ -117,10 +134,13 @@ async function ensureSocket(): Promise<any> {
         st.pairingCode = null;
         st.pairingPhone = null;
         st.failedAttempts = 0;
+        st.nextRetryAt = 0;
       } else {
+        // Gangguan jaringan (WiFi drop, laptop tidur, server sibuk, ganti IP)
+        // BUKAN alasan menghapus sesi — coba ulang dengan jeda makin panjang.
         st.failedAttempts++;
-        console.log(`terputus (kode ${code ?? "?"}, gagal ke-${st.failedAttempts})`);
-        if (st.failedAttempts >= 3) wipeAuth();
+        st.nextRetryAt = Date.now() + Math.min(30_000, 2_000 * st.failedAttempts);
+        console.log(`terputus (kode ${code ?? "?"}) — sesi dipertahankan, ulang dalam ${Math.round((st.nextRetryAt - Date.now()) / 1000)} dtk`);
       }
     }
   });
@@ -178,11 +198,12 @@ const server = Bun.serve({
     if (method === "OPTIONS") return new Response(null, { status: 204, headers: { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "GET,POST,OPTIONS", "Access-Control-Allow-Headers": "Content-Type" } });
     const J = (data: any, status = 200) => new Response(JSON.stringify(data), { status, headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } });
 
-    if (isStale()) wipeAuth();
+    if (isStuck()) dropStuckSocket();
 
     if (path === "/health" && method === "GET") {
-      // dorong koneksi saat health dipoll UI (agar auto-reconnect jalan)
-      if (st.status === "disconnected" && !st.sock) { void ensureSocket().catch(() => {}); }
+      // dorong koneksi saat health dipoll UI (agar auto-reconnect jalan);
+      // hormati jeda ulang (backoff) agar tidak menghantam server saat bermasalah
+      if (st.status === "disconnected" && !st.sock && Date.now() >= st.nextRetryAt) { void ensureSocket().catch(() => {}); }
       const status =
         st.status === "connected" ? "connected"
         : st.status === "pairing" || st.pairingCode ? "pairing"
@@ -296,8 +317,11 @@ console.log(`✅ wa-checker service berjalan di http://localhost:${PORT} (sesi W
 
 // Koneksi ulang otomatis: sesi yang putus (non-logout) disambung kembali sendiri
 // agar layanan selalu siap memeriksa tanpa menunggu poll /health dari UI.
+// Sesi TIDAK PERNAH dihapus di sini — pair ulang hanya bila server benar-benar
+// melepas perangkat (loggedOut) atau pengguna memutuskan sendiri via /unpair.
 // Pairing yang sedang menunggu scan tidak disentuh.
 setInterval(() => {
   if (st.status === "connected" || st.sock || st.pairingCode) return;
+  if (Date.now() < st.nextRetryAt) return;
   try { void ensureSocket().catch(() => {}); } catch {}
 }, 15_000);

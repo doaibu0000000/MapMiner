@@ -3,12 +3,39 @@
 
 import type { Place, PlaceHours } from "./types";
 
+/** Cari indeks akhir objek JSON berawal di posisi awal — depth-counting yang
+ *  menghormati string (escape \") agar "}" di dalam nilai string tidak salah
+ *  dianggap penutup. Respons Google ({"c":0,"d":"..."}) memuat tanda kurung
+ *  di dalam string ter-escape, sehingga indexOf("}") biasa gagal. */
+function findJsonObjectEnd(s: string, start: number): number {
+  let depth = 0;
+  let inStr = false;
+  let esc = false;
+  for (let i = start; i < s.length; i++) {
+    const c = s[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (c === "\\") esc = true;
+      else if (c === '"') inStr = false;
+      continue;
+    }
+    if (c === '"') inStr = true;
+    else if (c === "{") depth++;
+    else if (c === "}") {
+      depth--;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
 /** Parse body respons tbm=map / preview/place menjadi JSON mentah */
 export function parseTbmBody(body: string): any[] {
   let payload = body;
   if (payload.startsWith('{"c":')) {
-    // envelope chunked: ambil field "d"
-    const obj = JSON.parse(payload.slice(0, payload.indexOf("}") + 1));
+    // envelope chunked: ambil field "d" — batas objek dicari dengan depth-counting
+    const end = findJsonObjectEnd(payload, 0);
+    const obj = JSON.parse(payload.slice(0, end + 1));
     payload = obj.d ?? "";
   }
   if (payload.startsWith(")]}'")) payload = payload.slice(4);

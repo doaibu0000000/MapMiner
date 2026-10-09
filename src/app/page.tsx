@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { useEffect, useMemo, useRef, useState, useCallback } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, useCallback } from "react";
 import { useTheme } from "next-themes";
 import { useToast } from "@/hooks/use-toast";
 import {
@@ -13,12 +13,13 @@ import {
   Map as MapIcon,
   Building2, Navigation, Check, X, GitMerge, Layers3, Zap, Lightbulb, BellRing, StarHalf, Mail,
   Boxes, Target, RefreshCw, Inbox, Instagram, Facebook, Music2, Megaphone, ListChecks, Columns3,
-  AtSign, CalendarRange, ChevronsUpDown,
+  AtSign, CalendarRange, ChevronsUpDown, Images,
 } from "lucide-react";
 
 import { SYNONYM_CLUSTERS } from "@/data/synonym-clusters";
 
 import PenawaranMassal from "@/components/penawaran-massal";
+import UnduhMedia from "@/components/unduh-media";
 import { WhatsAppIcon } from "@/components/whatsapp-icon";
 
 import { Button } from "@/components/ui/button";
@@ -293,42 +294,51 @@ function getSynonymsForKeyword(rawKeyword: string): string[] {
   }
   if (phraseMatched) return out;
 
-  // 3. Per kata penting dalam frasa (≥3 huruf, bukan kata generik) — hanya bila frasa tidak dikenali kamus; mis. "cuci kilat" cocok "cuci mobil"
+  // 3. Per kata penting (≥3 huruf, bukan kata generik) — v13.6: kata hanya dicocokkan
+  //    ke ISTILAH UTAMA klaster (elemen pertama = nama kategori), BUKAN ke semua
+  //    istilah. Satu kata yang kebetulan muncul di istilah pinggiran ("kos" pada
+  //    "warung anak kos") tidak boleh menyeret seluruh klaster gorengan ke
+  //    pencarian "kos kaki" — itulah sumber saran "ngaco".
   for (let i = 0; i < SYNONYM_CLUSTERS.length; i++) {
     if (matched.has(i)) continue;
-    for (const term of SYNONYM_CLUSTERS[i]) {
-      const low = term.toLowerCase();
-      if (words.some((w) => wordHit(low, w))) {
-        addCluster(i);
-        break;
-      }
-    }
+    const head = SYNONYM_CLUSTERS[i][0].toLowerCase();
+    if (words.some((w) => wordHit(head, w))) addCluster(i);
   }
 
   // 4. Typo-tolerant (Levenshtein) — mis. "babershop" → "barbershop", "apotik" → "apotek".
-  //    Longgar hanya utk kata panjang: ≤2 jika ≥7 huruf, ≤1 jika 4-6 huruf — agar kata
-  //    pendek berbeda makna (mis. "baju" ≠ "jamu") tidak salah masuk klaster lain.
-  const typoBudget = (n: number) => (n >= 7 ? 2 : n >= 4 ? 1 : 0);
+  //    v13.7: diperketat lagi — kamus bisnis Indonesia penuh pasangan kata NYATA beda
+  //    makna yang hanya beda 1–2 huruf ("gendong" vs "rendang"/"genteng", "renang" vs
+  //    "rendang", "salon" vs "sablon", "warung" vs "sarung"), jadi:
+  //    (a) kata tunggal: jarak ≤1 (≥5 huruf); jarak ≤2 hanya untuk ≥9 huruf —
+  //        2 salinan pada kata 7–8 huruf hampir selalu dua kata berbeda;
+  //    (b) frasa multi-kata: setiap kata hanya di-typo-match ke ISTILAH UTAMA klaster
+  //        (head), jarak ≤1, keduanya ≥5 huruf — bukan ke 1.700+ istilah pinggiran
+  //        (pelajaran v13.6 yang sama, kini berlaku juga untuk typo).
+  const typoBudget = (n: number) => (n >= 9 ? 2 : n >= 5 ? 1 : 0);
+  const phraseTypo = !clean.includes(" ");
   for (let i = 0; i < SYNONYM_CLUSTERS.length; i++) {
     if (matched.has(i)) continue;
-    for (const term of SYNONYM_CLUSTERS[i]) {
-      const low = term.toLowerCase();
-      if (Math.abs(low.length - clean.length) > 2) continue;
-      if (levenshteinDist(clean, low) <= typoBudget(Math.min(clean.length, low.length))) {
-        addCluster(i);
-        break;
-      }
-    }
-    if (matched.has(i)) continue;
-    for (const w of words) {
-      if (matched.has(i)) break;
+    if (phraseTypo) {
+      // kata tunggal: typo pada frasa utuh diperbolehkan
       for (const term of SYNONYM_CLUSTERS[i]) {
         const low = term.toLowerCase();
-        if (Math.abs(low.length - w.length) > 2 || low.length < 4) continue;
-        if (levenshteinDist(w, low) <= typoBudget(Math.min(w.length, low.length))) {
+        if (Math.abs(low.length - clean.length) > 2) continue;
+        if (levenshteinDist(clean, low) <= typoBudget(Math.min(clean.length, low.length))) {
           addCluster(i);
           break;
         }
+      }
+      continue;
+    }
+    // frasa multi-kata: hanya kata utama klaster yang boleh di-typo-match
+    const head = SYNONYM_CLUSTERS[i][0].toLowerCase();
+    if (head.length < 5) continue;
+    for (const w of words) {
+      if (w.length < 5) continue;
+      if (matched.has(i)) break;
+      if (levenshteinDist(w, head) <= typoBudget(Math.min(w.length, head.length))) {
+        addCluster(i);
+        break;
       }
     }
   }
@@ -1554,10 +1564,11 @@ export default function Home({
 }: {
   searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
 }) {
-  // tab awal dibaca dari URL (?tab=penawaran) di sisi server — reload langsung
-  // menampilkan tab terakhir tanpa kedipan pindah tab
+  // tab awal dibaca dari URL (?tab=media / ?tab=penawaran) di sisi server — reload
+  // langsung menampilkan tab terakhir tanpa kedipan pindah tab
   const sp = React.use(searchParams);
-  const initialTab: "prospek" | "penawaran" = sp.tab === "penawaran" ? "penawaran" : "prospek";
+  const initialTab: "prospek" | "media" | "penawaran" =
+    sp.tab === "penawaran" ? "penawaran" : sp.tab === "media" ? "media" : "prospek";
   const { theme, setTheme } = useTheme();
   const { toast } = useToast();
   const [mounted, setMounted] = useState(false);
@@ -1567,9 +1578,37 @@ export default function Home({
   const [city, setCity] = useState("");
   const [deepMode, setDeepMode] = useState(true);
   // filter review minimal — tempat ber-ulasan di bawah nilai ini tidak diambil (default 10)
-  const [minReviews, setMinReviews] = useState("10");
-  // wajib WhatsApp — tempat tanpa nomor WhatsApp aktif otomatis dibuang (default aktif)
+  const [minReviews, setMinReviews] = useState("1");
+  // wajib WhatsApp — tempat tanpa nomor WhatsApp aktif otomatis dibuang.
+  // Persist localStorage: keadaan saklar bertahan walau halaman direload —
+  // mati tetap mati sampai dinyalakan sendiri, begitu juga sebaliknya.
+  // Pembacaan memakai useLayoutEffect DI KLIEN (sebelum paint pertama) supaya
+  // tidak ada kedipan menyala-sekejap; di SSR fallback ke useEffect (no-op).
   const [requireWa, setRequireWa] = useState(true);
+  // JAMINAN TANPA KEDIPAN: saklar disembunyikan (opacity-0) di HTML SSR dan baru
+  // tampil setelah useLayoutEffect membaca preferensi tersimpan — efek itu jalan
+  // sebelum paint pasca-hydration, jadi frame pertama yang terlihat mata selalu
+  // keadaan yang benar (mati tetap mati), tanpa bergantung pada CSS/skrip awal.
+  const [waSwitchReady, setWaSwitchReady] = useState(false);
+  const readWaPref = typeof window === "undefined" ? useEffect : useLayoutEffect;
+  readWaPref(() => {
+    try {
+      if (localStorage.getItem("mapminer_require_wa") === "0") setRequireWa(false);
+    } catch {}
+    // buka gerbang SATU FRAME SETELAH state selesai berpindah (selama tersembunyi,
+    // transisi dikunci CSS via data-wa-pending) — saat tampil, thumb sudah diam di
+    // posisi final; yang berubah hanya opacity, tidak ada geser kanan→kiri
+    const raf = requestAnimationFrame(() => setTimeout(() => setWaSwitchReady(true), 0));
+    return () => cancelAnimationFrame(raf);
+  }, []);
+  useEffect(() => {
+    try {
+      localStorage.setItem("mapminer_require_wa", requireWa ? "1" : "0");
+      // selaraskan atribut <html> yang dipakai CSS prapaint (layout.tsx) — tanpa
+      // ini CSS terus memaksa tampilan mati setelah saklar dinyalakan tanpa reload
+      document.documentElement.setAttribute("data-require-wa", requireWa ? "1" : "0");
+    } catch {}
+  }, [requireWa]);
   // sesi WhatsApp (protokol resmi) — status/pairing utk verifikasi berlapis
   const [waDialogOpen, setWaDialogOpen] = useState(false);
   const [waInfo, setWaInfo] = useState<{ status: string; phone: string | null; pairingCode: string | null; pairingPhone: string | null } | null>(null);
@@ -1579,31 +1618,31 @@ export default function Home({
   const [waError, setWaError] = useState("");
   const [starting, setStarting] = useState(false);
 
-  // navigasi tab: Cari Prospek (halaman pencarian) / Penawaran Massal — dipersist di URL + localStorage.
+  // navigasi tab: Cari Prospek / Unduh Media / Penawaran Massal — dipersist di URL + localStorage.
   // Tab awal dari URL dirender server (HTML pertama sudah benar); localStorage
   // hanya fallback untuk URL tanpa ?tab, ditopang CSS awal via atribut <html>.
-  const [tab, setTab] = useState<"prospek" | "penawaran">(initialTab);
+  const [tab, setTab] = useState<"prospek" | "media" | "penawaran">(initialTab);
   useEffect(() => {
     try {
       const saved = localStorage.getItem("mapminer_tab");
-      if ((saved === "prospek" || saved === "penawaran") && saved !== initialTab) {
+      if ((saved === "prospek" || saved === "media" || saved === "penawaran") && saved !== initialTab) {
         setTab(saved);
         const u = new URL(window.location.href);
-        if (saved === "penawaran") u.searchParams.set("tab", "penawaran");
-        else u.searchParams.delete("tab");
+        if (saved === "prospek") u.searchParams.delete("tab");
+        else u.searchParams.set("tab", saved);
         window.history.replaceState(null, "", u);
       }
     } catch {}
   }, []);
   useEffect(() => { try { localStorage.setItem("mapminer_tab", tab); } catch {} }, [tab]);
   // ganti tab + selaraskan URL & atribut <html> agar reload menampilkan tab yang sama
-  const switchTab = (t: "prospek" | "penawaran") => {
+  const switchTab = (t: "prospek" | "media" | "penawaran") => {
     setTab(t);
     document.documentElement.setAttribute("data-mm-tab", t);
     try {
       const u = new URL(window.location.href);
-      if (t === "penawaran") u.searchParams.set("tab", "penawaran");
-      else u.searchParams.delete("tab");
+      if (t === "prospek") u.searchParams.delete("tab");
+      else u.searchParams.set("tab", t);
       window.history.replaceState(null, "", u);
     } catch {}
   };
@@ -1829,13 +1868,22 @@ export default function Home({
         }
       }
     }
+    // v13.5: saran Google/AI wajib RELEVAN — berbagi ≥1 kata bermakna (≥3 huruf,
+    // bukan kata generik) dgn salah satu kata kunci yang diketik. Mencegah saran
+    // lintas kategori ("salon" padahal mencari "toko topi") walau lolos dari sumber.
+    const GENERIC_MERGE = new Set(["toko", "tempat", "jasa", "servis", "service", "agen", "pusat", "kantor", "terdekat", "near", "the", "dan", "di"]);
+    const partWords = keywordParts.flatMap((p) => p.toLowerCase().split(" ").filter((w) => w.length >= 3 && !GENERIC_MERGE.has(w)));
+    const relevantToKeyword = (s: string) => {
+      if (partWords.length === 0) return true;
+      const words = new Set(s.toLowerCase().split(" "));
+      return partWords.some((w) => words.has(w));
+    };
     const ai = firstPart ? aiSyns[firstPart] ?? [] : [];
     for (const s of ai) {
       const low = s.toLowerCase();
-      if (!lowerParts.includes(low) && !seen.has(low)) {
-        seen.add(low);
-        merged.push(s);
-      }
+      if (lowerParts.includes(low) || seen.has(low) || !relevantToKeyword(s)) continue;
+      seen.add(low);
+      merged.push(s);
     }
     return merged
       .map((s, i) => ({ s, i, score: scoreOf(s) }))
@@ -2590,7 +2638,7 @@ export default function Home({
                   Klien<span className="text-emerald-600 dark:text-emerald-400">Flow</span>
                 </div>
                 <div className="mt-1 text-[10px] font-medium uppercase tracking-[0.18em] text-muted-foreground">
-                  Google Maps Scraper
+                  Intelijen Bisnis Lokal
                 </div>
               </div>
             </div>
@@ -2675,6 +2723,19 @@ export default function Home({
               <WhatsAppIcon className="h-[18px] w-[18px]" />
               Penawaran Massal
             </button>
+            <button
+              type="button"
+              onClick={() => switchTab("media")}
+              aria-current={tab === "media" ? "page" : undefined}
+              className={`h-10 px-4 rounded-xl flex items-center gap-2 text-sm font-medium transition-all cursor-pointer ${
+                tab === "media"
+                  ? "bg-gradient-to-r from-emerald-500 to-teal-600 text-white"
+                  : "text-muted-foreground hover:text-foreground hover:bg-muted/70 border border-border/60"
+              }`}
+            >
+              <Images className="h-4 w-4" />
+              Unduh Media
+            </button>
           </div>
         </nav>
 
@@ -2743,13 +2804,7 @@ export default function Home({
 
                 <div className="flex flex-col sm:flex-row sm:items-center gap-3 justify-between">
                   <div className="flex flex-wrap items-center gap-2.5">
-                    {/* Mode Mendalam Switch */}
-                    <div className="flex items-center gap-3 rounded-xl border border-border/70 bg-muted/20 dark:bg-[#2a2a2a] px-3.5 h-11 shrink-0">
-                      <Switch id="deepMode" checked={deepMode} onCheckedChange={setDeepMode} />
-                      <Label htmlFor="deepMode" className="text-sm font-medium cursor-pointer flex items-center gap-1.5 whitespace-nowrap">
-                        Mode Mendalam <Sparkles className="h-3.5 w-3.5 text-emerald-500" />
-                      </Label>
-                    </div>
+                    {/* Mode Mendalam selalu aktif — toggle UI dihapus */}
 
                     {/* Filter Review Minimal — tempat ber-ulasan di bawah nilai ini tidak diambil */}
                     <div className="flex items-center gap-2.5 rounded-xl border border-border/70 bg-muted/20 dark:bg-[#2a2a2a] px-3.5 h-11 shrink-0">
@@ -2774,9 +2829,15 @@ export default function Home({
                     <Tooltip>
                       <TooltipTrigger asChild>
                         <div className="flex items-center gap-3 rounded-xl border border-border/70 bg-muted/20 dark:bg-[#2a2a2a] px-3.5 h-11 shrink-0">
-                          <Switch id="requireWa" checked={requireWa} onCheckedChange={setRequireWa} />
+                          <Switch
+                            id="requireWa"
+                            checked={requireWa}
+                            onCheckedChange={setRequireWa}
+                            data-wa-pending={waSwitchReady ? undefined : ""}
+                            className={waSwitchReady ? undefined : "opacity-0"}
+                          />
                           <Label htmlFor="requireWa" className="text-sm font-medium cursor-pointer whitespace-nowrap">
-                            Wajib WhatsApp
+                            WhatsApp
                           </Label>
                         </div>
                       </TooltipTrigger>
@@ -2787,7 +2848,7 @@ export default function Home({
                       </TooltipContent>
                     </Tooltip>
 
-                    {/* Tombol Popover Saran Sinonim (Hanya tombol saat belum diklik, buka popover saat diklik) */}
+                    {/* Tombol Popover Intelijen Bisnis Lokal (Hanya tombol saat belum diklik, buka popover saat diklik) */}
                     {synonymList.length > 0 && (
                       <Popover>
                         <PopoverTrigger asChild>
@@ -2825,7 +2886,7 @@ export default function Home({
                             <div>
                               <div className="font-semibold text-sm text-foreground flex items-center gap-1.5">
                                 <Sparkles className="h-3.5 w-3.5 text-emerald-500" />
-                                Saran Sinonim
+                                Intelijen Bisnis Lokal
                                 {aiLoading && (
                                   <span className="inline-flex items-center gap-1 text-[10px] font-medium text-violet-600 dark:text-violet-400">
                                     <Loader2 className="h-3 w-3 animate-spin" /> saran Google…
@@ -2899,7 +2960,6 @@ export default function Home({
                             <span>
                               <b>{checkedSynonymCount}</b> dari {synonymList.length} terpilih
                             </span>
-                            <span className="italic text-[11px]">Mode batch Google Maps</span>
                           </div>
                         </PopoverContent>
                       </Popover>
@@ -3040,7 +3100,8 @@ export default function Home({
                         Tidak ada riwayat yang cocok dengan &quot;{historySearch}&quot;
                       </div>
                     ) : (
-                      <div className="space-y-2 max-h-[420px] overflow-y-auto overflow-x-hidden custom-scrollbar pr-1.5 scroll-smooth">
+                      <div className="space-y-2 max-h-[312px] overflow-y-auto overflow-x-hidden custom-scrollbar pr-1.5 scroll-smooth">
+                        {/* tinggi pas 4 baris — lebih dari 4 item → scroll, halaman tidak memanjang */}
                         {filteredJobs.map((j) => {
                           const meta = STATUS_META[j.status];
                           const kwCount = j.keywords?.length ?? 1;
@@ -3201,6 +3262,11 @@ export default function Home({
           </section>
           </div>
 
+          {/* tampilan tab Unduh Media — tetap ter-mount agar progres unduhan tidak hilang saat pindah tab */}
+          <div data-mm-pane="media" className={tab === "media" ? "" : "hidden"}>
+            <UnduhMedia />
+          </div>
+
           {/* tampilan tab Penawaran Massal — tetap ter-mount agar antrian kirim tidak hilang saat pindah tab */}
           <div data-mm-pane="penawaran" className={tab === "penawaran" ? "" : "hidden"}>
             <PenawaranMassal
@@ -3315,7 +3381,7 @@ export default function Home({
                 <circle cx="90" cy="90" r="6.5" fill="#fff"/>
               </svg>
               <span>
-                <b className="text-foreground">KlienFlow</b> — Google Maps Scraper · data 100% dari Google Maps
+                <b className="text-foreground">KlienFlow</b> — Intelijen Bisnis Lokal
                 <Badge variant="outline" className="ml-2 h-4 px-1.5 text-[9px] tabular-nums border-emerald-500/25 text-emerald-600 dark:text-emerald-400">v10.0</Badge>
                 {serviceStats?.version && (
                   <span className="ml-1.5 text-[10px] text-muted-foreground">engine {serviceStats.version}</span>
@@ -3323,7 +3389,7 @@ export default function Home({
               </span>
             </div>
             <div className="flex items-center gap-3">
-              <span>Gunakan data sesuai ketentuan Google &amp; UU PDP 🇮🇩</span>
+              <span>Gunakan data secara bertanggung jawab sesuai ketentuan &amp; UU PDP 🇮🇩</span>
             </div>
           </div>
         </footer>

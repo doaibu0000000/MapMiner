@@ -15,11 +15,11 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "KlienFlow — Google Maps Scraper",
+  title: "KlienFlow — Intelijen Bisnis Lokal",
   description:
     "Ambil SEMUA data bisnis dari Google Maps (Bisnis, Review, Website, Instagram, Telepon, WhatsApp, Link Google Maps) berdasarkan kata kunci & kota, lalu ekspor ke Excel/CSV.",
   keywords: [
-    "Google Maps Scraper",
+    "Intelijen Bisnis Lokal",
     "scrape Google Maps",
     "data bisnis Indonesia",
     "ekspor Excel",
@@ -30,7 +30,7 @@ export const metadata: Metadata = {
     icon: "/logo.svg?v=2",
   },
   openGraph: {
-    title: "KlienFlow — Google Maps Scraper",
+    title: "KlienFlow — Intelijen Bisnis Lokal",
     description: "Ambil semua data bisnis dari Google Maps, ekspor ke Excel/CSV.",
     siteName: "KlienFlow",
     type: "website",
@@ -47,10 +47,12 @@ export default function RootLayout({
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased bg-background text-foreground`}
       >
-        {/* pulihkan tab terakhir SEBELUM render pertama — cegah kedipan pindah tab saat reload */}
+        {/* pulihkan tab terakhir SEBELUM render pertama — cegah kedipan pindah tab saat reload;
+            sekalian posisi saklar WhatsApp (data-require-wa) agar tampilan MATI/ NYALA benar
+            sejak frame pertama, menutup jeda sebelum hydration */}
         <script
           dangerouslySetInnerHTML={{
-            __html: 'try{var t=localStorage.getItem("mapminer_tab");if(t==="prospek"||t==="penawaran")document.documentElement.setAttribute("data-mm-tab",t)}catch(e){}',
+            __html: 'try{var t=localStorage.getItem("mapminer_tab");if(t==="prospek"||t==="media"||t==="penawaran")document.documentElement.setAttribute("data-mm-tab",t)}catch(e){}try{document.documentElement.setAttribute("data-require-wa",localStorage.getItem("mapminer_require_wa")==="0"?"0":"1")}catch(e){}',
           }}
         />
         {/* default gelap; enableSystem=false agar tema OS tidak menimpa;

@@ -7,10 +7,11 @@
 
 import * as React from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useToast } from "@/hooks/use-toast";
 import {
   Send, Pause, Play, Square, FastForward, Loader2,
-  CheckCircle2, XCircle, AlertTriangle, Clock, RotateCcw,
+  AlertTriangle, Clock, Save, Check,
   FileSpreadsheet, Upload, Trash2, Sheet, ChevronRight, X,
 } from "lucide-react";
 import { WhatsAppIcon } from "@/components/whatsapp-icon";
@@ -33,14 +34,6 @@ import SheetEditorDialog from "@/components/sheet-editor-dialog";
 // ---------- tipe ----------
 // Recipient & SheetSource didefinisikan di @/lib/spreadsheet
 
-interface SendLog {
-  t: number;
-  name: string;
-  phone: string; // tampilan +62…
-  ok: boolean;
-  msg: string;
-}
-
 // ---------- util ----------
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const fmtPhone = (d: string) => (d ? `+${d}` : "-");
@@ -52,8 +45,50 @@ const clampInputNum = (raw: string, min: number, max: number): string => {
   if (raw.trim() === "" || Number.isNaN(n)) return String(min);
   return String(Math.min(max, Math.max(min, n)));
 };
-const fmtTime = (t: number) =>
-  new Date(t).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+
+// ---------- riwayat undo/redo (Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y) ----------
+// Textarea terkelola React kehilangan undo bawaan browser — nilai DOM ditulis
+// ulang programatik (apalagi kotak nomor yang dipotong otomatis ke 50 baris).
+// Riwayat dikelola sendiri: ketikan beruntun <800 mdtk digabung jadi satu titik
+// undo, tempel/hapus besar selalu membuka titik tersendiri.
+interface TextHistory { past: string[]; future: string[] }
+const HISTORY_LIMIT = 100;
+const BURST_MS = 800;
+
+type HistoryRef = { current: TextHistory };
+type LastRef = { current: { value: string; at: number } };
+
+const recordTextHistory = (h: HistoryRef, last: LastRef, next: string) => {
+  const now = Date.now();
+  const newBurst = now - last.current.at > BURST_MS || Math.abs(next.length - last.current.value.length) > 1;
+  if (newBurst) h.current.past = [...h.current.past.slice(-(HISTORY_LIMIT - 1)), last.current.value];
+  h.current.future = [];
+  last.current = { value: next, at: now };
+};
+
+const handleHistoryKeys =
+  (h: HistoryRef, last: LastRef, setValue: (v: string) => void) =>
+  (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (!(e.ctrlKey || e.metaKey)) return;
+    const key = e.key.toLowerCase();
+    const isUndo = key === "z" && !e.shiftKey;
+    const isRedo = key === "y" || (key === "z" && e.shiftKey);
+    if (!isUndo && !isRedo) return;
+    e.preventDefault(); // selalu — undo bawaan browser di sini tidak andal
+    const from = isUndo ? h.current.past : h.current.future;
+    if (from.length === 0) return;
+    const value = from[from.length - 1];
+    if (isUndo) {
+      h.current.past = from.slice(0, -1);
+      h.current.future = [...h.current.future.slice(-(HISTORY_LIMIT - 1)), last.current.value];
+    } else {
+      h.current.future = from.slice(0, -1);
+      h.current.past = [...h.current.past.slice(-(HISTORY_LIMIT - 1)), last.current.value];
+    }
+    // at = 0 → ketikan setelah undo/redo selalu membuka titik riwayat baru
+    last.current = { value, at: 0 };
+    setValue(value);
+  };
 const fmtDur = (s: number) => {
   const j = Math.floor(s / 3600);
   const m = Math.floor((s % 3600) / 60);
@@ -61,6 +96,15 @@ const fmtDur = (s: number) => {
   if (j > 0) return `${j} j ${m} mnt`;
   if (m > 0) return `${m} mnt ${d} dtk`;
   return `${d} dtk`;
+};
+/** Sisa waktu TANPA detik: menit bulat ke atas (jam bila panjang) — dibaca sekilas.
+ *  Termasuk tanda ±-nya; di bawah satu menit tampil "<1 mnt" tanpa ±. */
+const fmtMenit = (s: number) => {
+  const v = Math.max(0, s);
+  if (v < 60) return "<1 mnt";
+  const mnt = Math.ceil(v / 60);
+  if (mnt < 90) return `±${mnt} mnt`;
+  return `±${(v / 3600).toFixed(1).replace(".", ",")} jam`;
 };
 
 /** Parsing daftar nomor dari textarea: pisah per baris/koma/spasi, normalisasi,
@@ -122,12 +166,9 @@ const LS_SENT = "mapminer_wa_sent"; // catatan nomor terkirim per pesan
 // batas keras jumlah penerima per pengiriman
 const MAX_RECIPIENTS = 50;
 
-// ritme kirim aman utk nomor pribadi: istirahat panjang tiap beberapa pesan terkirim
+// ritme kirim aman utk nomor pribadi
 const DEFAULT_DELAY_MIN = "60";     // detik
 const DEFAULT_DELAY_MAX = "150";    // detik
-const DEFAULT_BATCH_EVERY = 10;      // pesan
-const DEFAULT_BATCH_PAUSE_MIN = 5;   // menit
-const DEFAULT_BATCH_PAUSE_MAX = 10;  // menit
 
 /** Sidik hash sederhana (djb2 + panjang) utk mengidentifikasi isi pesan.
  *  Bukan untuk keamanan — hanya membedakan teks pesan satu dgn lain. */
@@ -193,14 +234,21 @@ export default function PenawaranMassal({ waStatus, waChecked = true, onOpenWa }
   // Pesan diubah/dihapus → catatan tidak berlaku lagi (semua dianggap belum terkirim).
   const [sentRecord, setSentRecord] = useState<{ hash: string; sent: string[] } | null>(null);
 
+  // riwayat ketikan kotak nomor — dipotong otomatis ke 50 baris merusak undo bawaan
+  const numbersHist = useRef<TextHistory>({ past: [], future: [] });
+  const numbersLast = useRef({ value: numbersInput, at: 0 });
+
   // batasi isi kotak: lebih dari 50 nomor valid → simpan 50 pertama (satu per baris),
   // sisanya dihapus dari kotak. Ronde berikutnya = isi nomor baru.
   const handleNumbersChange = (raw: string) => {
     const all = parseNumbers(raw).all;
     if (all.length > MAX_RECIPIENTS) {
-      setNumbersInput(all.slice(0, MAX_RECIPIENTS).map((r) => r.phoneDigits).join("\n"));
+      const next = all.slice(0, MAX_RECIPIENTS).map((r) => r.phoneDigits).join("\n");
+      recordTextHistory(numbersHist, numbersLast, next);
+      setNumbersInput(next);
       setManualTrimInfo(`${all.length - MAX_RECIPIENTS} nomor kelebihan dihapus — maksimal ${MAX_RECIPIENTS} per pengiriman. Isi nomor baru untuk ronde berikutnya.`);
     } else {
+      recordTextHistory(numbersHist, numbersLast, raw);
       setNumbersInput(raw);
       setManualTrimInfo(null);
     }
@@ -300,24 +348,62 @@ export default function PenawaranMassal({ waStatus, waChecked = true, onOpenWa }
   };
   // pesan lanjutan (opsional): terkirim ke chat yang sama setelah pesan pertama
   const [followUp, setFollowUp] = useState<string>(DEFAULT_FOLLOW_UP);
+  // riwayat ketikan pesan utama & pesan lanjutan untuk undo/redo
+  const templateHist = useRef<TextHistory>({ past: [], future: [] });
+  const templateLast = useRef({ value: template, at: 0 });
+  const followUpHist = useRef<TextHistory>({ past: [], future: [] });
+  const followUpLast = useRef({ value: followUp, at: 0 });
+
+  // nilai diganti dari luar ketikan (muat preferensi tersimpan) → patokan riwayat
+  // direset; at = 0 agar ketikan berikut selalu membuka titik undo baru
+  useEffect(() => {
+    if (template !== templateLast.current.value) templateLast.current = { value: template, at: 0 };
+  }, [template]);
+  useEffect(() => {
+    if (followUp !== followUpLast.current.value) followUpLast.current = { value: followUp, at: 0 };
+  }, [followUp]);
+  useEffect(() => {
+    if (numbersInput !== numbersLast.current.value) numbersLast.current = { value: numbersInput, at: 0 };
+  }, [numbersInput]);
 
   // langkah 3 — pengaturan kirim (rentang aman utk nomor pribadi: 1–2,5 menit)
   const [delayMin, setDelayMin] = useState(DEFAULT_DELAY_MIN);
   const [delayMax, setDelayMax] = useState(DEFAULT_DELAY_MAX);
-  // istirahat otomatis: berhenti sebentar setiap N pesan terkirim (0 = matikan)
-  const [batchEvery, setBatchEvery] = useState(String(DEFAULT_BATCH_EVERY));
-  const [batchPauseMin, setBatchPauseMin] = useState(String(DEFAULT_BATCH_PAUSE_MIN));
-  const [batchPauseMax, setBatchPauseMax] = useState(String(DEFAULT_BATCH_PAUSE_MAX));
 
   // antrian kirim
   const [sending, setSending] = useState(false);
   const [paused, setPaused] = useState(false);
   const [countdown, setCountdown] = useState(0);
-  const [longLeft, setLongLeft] = useState(0); // sisa istirahat batch (detik)
   const [sentCount, setSentCount] = useState(0);
   const [failCount, setFailCount] = useState(0);
-  const [logs, setLogs] = useState<SendLog[]>([]);
   const [progressIdx, setProgressIdx] = useState(0); // 0 = belum mulai
+  // Rencana kirim yang DIBEKUKAN saat Mulai Kirim ditekan: jumlah penerima & estimasi
+  // total. Wajib dibekukan — queue menyusut live begitu nomor tercatat terkirim
+  // (sentSet tumbuh), tanpa pembekuan penyebut progres & estimasi berubah di tengah
+  // jalan ("1 dari 2" mendadak jadi "1 dari 1", bar melompat penuh).
+  const [runPlan, setRunPlan] = useState<{ total: number; estTotal: number } | null>(null);
+  // notifikasi "Simpan Berhasil": turun dari atas layar, tutup sendiri setelah ±2,4 dtk
+  const [savedPop, setSavedPop] = useState<{ title: string; desc: string } | null>(null);
+  const [savedClosing, setSavedClosing] = useState(false);
+  // nomor urut tiap kali notifikasi muncul — dipakai sebagai <key> agar elemen
+  // dibuat ulang: menekan Simpan lain saat notifikasi masih tampil tetap
+  // memutar ulang animasi turun-dari-atas, bukan sekadar mengganti teks
+  const [savedSeq, setSavedSeq] = useState(0);
+  const savedTimerRef = useRef<number | null>(null);
+  const savedCloseTimerRef = useRef<number | null>(null);
+  const showSavedPop = (title: string, desc: string) => {
+    if (savedTimerRef.current) window.clearTimeout(savedTimerRef.current);
+    if (savedCloseTimerRef.current) window.clearTimeout(savedCloseTimerRef.current);
+    setSavedPop({ title, desc });
+    setSavedClosing(false);
+    setSavedSeq((n) => n + 1);
+    savedTimerRef.current = window.setTimeout(() => setSavedClosing(true), 2400);
+    savedCloseTimerRef.current = window.setTimeout(() => { setSavedPop(null); setSavedClosing(false); }, 2700);
+  };
+  useEffect(() => () => {
+    if (savedTimerRef.current) window.clearTimeout(savedTimerRef.current);
+    if (savedCloseTimerRef.current) window.clearTimeout(savedCloseTimerRef.current);
+  }, []);
   // tab disembunyikan saat mengirim → browser memperlambat timer; tampilkan peringatan
   const [tabHidden, setTabHidden] = useState(false);
   useEffect(() => {
@@ -330,107 +416,70 @@ export default function PenawaranMassal({ waStatus, waChecked = true, onOpenWa }
   const stopRef = useRef(false);
   const pauseRef = useRef(false);
   const skipRef = useRef(false); // lewati jeda berjalan
-  const longPauseAccumRef = useRef(0);   // total detik istirahat panjang (batch) yang sudah berlalu — dikeluarkan dari hitungan pace
-  const longPauseStartRef = useRef<number | null>(null); // mulai istirahat panjang yang sedang berjalan
 
   // muat preferensi tersimpan SETELAH mount — render pertama harus identik dgn SSR.
-  // persist ditahan sampai load selesai agar nilai default tidak menimpa yang tersimpan.
-  const [prefsLoaded, setPrefsLoaded] = useState(false);
+  // Penyimpanan HANYA lewat tombol Simpan: ketikan tidak lagi tersimpan otomatis,
+  // reload mengembalikan snapshot terakhir yang disimpan (bukan isi kotak saat ini).
+  const [savedTpl, setSavedTpl] = useState(DEFAULT_TEMPLATE);
+  const [savedFu, setSavedFu] = useState(DEFAULT_FOLLOW_UP);
+  const [savedDelay, setSavedDelay] = useState<{ min: string; max: string }>({ min: DEFAULT_DELAY_MIN, max: DEFAULT_DELAY_MAX });
   useEffect(() => {
     try {
       const tpl = localStorage.getItem(LS_TEMPLATE);
-      if (tpl) setTemplate(tpl);
+      if (tpl) { setTemplate(tpl); setSavedTpl(tpl); }
       const fu = localStorage.getItem(LS_FOLLOW_UP);
-      if (fu !== null) setFollowUp(fu);
+      if (fu !== null) { setFollowUp(fu); setSavedFu(fu); }
       const d = JSON.parse(localStorage.getItem(LS_DELAY) ?? "null");
       if (d?.min && d?.max) {
         // bawaan lama (8/20 lalu 45/90) terlalu cepat utk nomor pribadi — naikkan sekali ke rentang aman
         if ((d.min === 8 && d.max === 20) || (d.min === 45 && d.max === 90)) {
-          setDelayMin("60");
-          setDelayMax("150");
+          setDelayMin("60"); setDelayMax("150");
+          setSavedDelay({ min: "60", max: "150" });
         } else {
-          setDelayMin(String(d.min));
-          setDelayMax(String(d.max));
+          setDelayMin(String(d.min)); setDelayMax(String(d.max));
+          setSavedDelay({ min: String(d.min), max: String(d.max) });
         }
-      }
-      if (typeof d?.every === "number") setBatchEvery(String(d.every));
-      if (typeof d?.pmin === "number" && typeof d?.pmax === "number") {
-        // bawaan lama (20/30 mnt) terlalu panjang — naikkan sekali ke 5/10 menit
-        if (d.pmin === 20 && d.pmax === 30) {
-          setBatchPauseMin("5");
-          setBatchPauseMax("10");
-        } else {
-          setBatchPauseMin(String(d.pmin));
-          setBatchPauseMax(String(d.pmax));
-        }
-      } else {
-        if (typeof d?.pmin === "number") setBatchPauseMin(String(d.pmin));
-        if (typeof d?.pmax === "number") setBatchPauseMax(String(d.pmax));
       }
       const rec = localStorage.getItem(LS_SENT);
       if (rec) setSentRecord(JSON.parse(rec) as { hash: string; sent: string[] });
     } catch {}
-    setPrefsLoaded(true);
   }, []);
 
-  // persist template & jeda
-  useEffect(() => {
-    if (!prefsLoaded) return;
-    try { localStorage.setItem(LS_TEMPLATE, template); } catch {}
-  }, [template, prefsLoaded]);
-  useEffect(() => {
-    if (!prefsLoaded) return;
-    try { localStorage.setItem(LS_FOLLOW_UP, followUp); } catch {}
-  }, [followUp, prefsLoaded]);
-  useEffect(() => {
-    if (!prefsLoaded) return;
-    try {
-      localStorage.setItem(LS_DELAY, JSON.stringify({
-        min: Number(delayMin) || 60,
-        max: Number(delayMax) || 150,
-        every: Number(batchEvery) || 0,
-        pmin: Number(batchPauseMin) || 5,
-        pmax: Number(batchPauseMax) || 10,
-      }));
-    } catch {}
-  }, [delayMin, delayMax, batchEvery, batchPauseMin, batchPauseMax, prefsLoaded]);
+  // ada perubahan belum disimpan? (dibanding isi kotak vs snapshot tersimpan)
+  const msgDirty = template !== savedTpl || followUp !== savedFu;
+  const delayDirty = delayMin !== savedDelay.min || delayMax !== savedDelay.max;
 
-  // hash pesan aktif & nomor yang sudah terkirim dgn pesan tersebut
-  const msgHash = useMemo(() => hashText(template), [template]);
+  // hash pesan yang TERSIMPAN (hasil tombol Simpan) — bukan teks yang sedang diedit.
+  // Catatan terkirim hanya berlaku untuk pesan tersimpan: mengubah teks TIDAK
+  // mengubah status "sudah terkirim" selama belum ditekan Simpan.
+  const savedHash = useMemo(() => hashText(savedTpl), [savedTpl]);
   const sentSet = useMemo(
-    () => new Set<string>(sentRecord && sentRecord.hash === msgHash ? sentRecord.sent : []),
-    [sentRecord, msgHash]
+    () => new Set<string>(sentRecord && sentRecord.hash === savedHash ? sentRecord.sent : []),
+    [sentRecord, savedHash]
   );
 
-  // antrian = isi kotak (dijamin ≤ 50 oleh handleNumbersChange) MINUS yang sudah terkirim dgn pesan ini
+  // antrian = isi kotak (dijamin ≤ 50 oleh handleNumbersChange) MINUS yang sudah terkirim dgn pesan tersimpan
   const queue = useMemo(() => parsed.all.filter((r) => !sentSet.has(r.phoneDigits)), [parsed, sentSet]);
 
-  // pesan dihapus (kosong) → catatan terkirim pesan itu dianggap tidak sah: reset
-  useEffect(() => {
-    if (!template.trim() && sentRecord) {
-      setSentRecord(null);
-      try { localStorage.removeItem(LS_SENT); } catch {}
-    }
-  }, [template, sentRecord]);
-
-  // estimasi: jeda antar pesan + istirahat batch tiap N terkirim (0 = tanpa istirahat)
-  const everyNum = Math.max(0, Math.floor(Number(batchEvery) || 0));
-  const pMinNum = Math.max(1, Math.floor(Number(batchPauseMin) || DEFAULT_BATCH_PAUSE_MIN));
-  const pMaxNum = Math.max(pMinNum, Math.floor(Number(batchPauseMax) || DEFAULT_BATCH_PAUSE_MAX));
+  // estimasi: jeda antar pesan
   const avgGap = (Math.max(3, Number(delayMin) || 8) + Math.max(3, Number(delayMax) || 20)) / 2;
-  const avgBatchPause = ((pMinNum + pMaxNum) / 2) * 60;
   const followUpMsg = followUp.trim();
   const avgFollowUp = (FOLLOW_UP_DELAY_MIN_S + FOLLOW_UP_DELAY_MAX_S) / 2;
-  // istirahat panjang dihitung per NOMOR penerima (bukan per pesan) — pesan
-  // lanjutan tidak menambah hitungan, sama seperti logika pengiriman
-  const batchPauses = everyNum > 0 && queue.length > 1 ? Math.floor((queue.length - 1) / everyNum) : 0;
   // estimasi juga mencakup durasi simulasi mengetik per pesan
   const typingS = (len: number) => Math.min(TYPING_CAP_S, TYPING_BASE_S + (len * TYPING_MS_PER_CHAR) / 1000);
-  // per nomor: satu jeda antar-nomor + simulasi ketik pesan utama
-  // (+ pesan lanjutan: jeda singkatnya + simulasi ketiknya)
-  const estSeconds =
-    queue.length * (avgGap + typingS(template.length) + (followUpMsg ? avgFollowUp + typingS(followUpMsg.length) : 0)) +
-    batchPauses * avgBatchPause;
+  // Estimasi total utk n penerima — mengikuti struktur loop kirim persis: pesan
+  // utama penerima PERTAMA langsung terkirim (tanpa simulasi ketik), penerima
+  // berikutnya disertai simulasi ketik; pesan lanjutan tanpa simulasi ketik
+  // (hanya jeda 5–15 dtk); jeda antar pesan hanya di ANTARA pesan (penerima
+  // terakhir tidak diikuti jeda). Tanpa itu estimasi 1 penerima membengkak
+  // sebesar satu jeda penuh.
+  const estTotalFor = (n: number) =>
+    Math.round(
+      Math.max(0, n - 1) * typingS(template.length)
+      + n * (followUpMsg ? avgFollowUp : 0)
+      + Math.max(0, n - 1) * avgGap
+    );
+  const estSeconds = estTotalFor(queue.length);
   const estLabel =
     estSeconds >= 5400 ? `${(estSeconds / 3600).toFixed(1).replace(".", ",")} jam`
     : estSeconds >= 90 ? `${Math.round(estSeconds / 60)} mnt`
@@ -446,41 +495,40 @@ export default function PenawaranMassal({ waStatus, waChecked = true, onOpenWa }
     return () => clearInterval(t);
   }, [sending]);
   const elapsedS = startedAt ? Math.max(0, Math.floor((Date.now() - startedAt) / 1000)) : 0;
-  const progressFrac = queue.length > 0 ? Math.min(1, progressIdx / queue.length) : 0;
-  // pace dihitung dari waktu AKTIF (istirahat panjang batch dikeluarkan) agar
-  // angka "sisa" tidak melonjak saat pengiriman sedang istirahat
-  const longPauseActiveS = longPauseStartRef.current ? Math.floor((Date.now() - longPauseStartRef.current) / 1000) : 0;
-  const activeS = Math.max(0, elapsedS - longPauseAccumRef.current - longPauseActiveS);
-  // sisa waktu dari kecepatan aktif aktual (+ sisa istirahat yang sedang berjalan);
-  // sebelum ada progres → pakai estimasi konfigurasi
-  const etaS = progressIdx > 0 && progressIdx < queue.length
-    ? Math.round((activeS / progressIdx) * (queue.length - progressIdx)) + (longPauseStartRef.current ? longLeft : 0)
+  const plan = runPlan;
+  const planTotal = plan ? plan.total : queue.length;
+  // Bar progres terisi MULUS mengikuti waktu terhadap estimasi total (seperti
+  // unduhan berkas — tidak melompat per penerima); penuh hanya saat semua penerima
+  // sudah diproses. Setelah selesai/berhenti: proporsi penerima terproses.
+  const progressFrac =
+    plan && plan.total > 0
+      ? sending
+        ? progressIdx >= plan.total
+          ? 1
+          : Math.min(0.99, plan.estTotal > 0 ? elapsedS / plan.estTotal : 0)
+        : Math.min(1, progressIdx / plan.total)
+      : queue.length > 0
+        ? Math.min(1, progressIdx / queue.length)
+        : 0;
+  // Sisa waktu = mundur dari estimasi total − waktu berjalan → selalu konsisten
+  // dengan baris "Estimasi total" (rumus kecepatan-aktual lama menghasilkan angka
+  // ngawur, mis. "sisa <1 mnt" dua detik setelah mulai).
+  const etaS = plan && sending
+    ? Math.max(0, plan.estTotal - elapsedS)
     : estSeconds;
 
-  // tombol "Default": menonjol hanya ketika pengaturan berbeda dari bawaan
-  const settingsChanged =
-    delayMin !== DEFAULT_DELAY_MIN ||
-    delayMax !== DEFAULT_DELAY_MAX ||
-    batchEvery !== String(DEFAULT_BATCH_EVERY) ||
-    batchPauseMin !== String(DEFAULT_BATCH_PAUSE_MIN) ||
-    batchPauseMax !== String(DEFAULT_BATCH_PAUSE_MAX);
-  const resetSettings = () => {
-    setDelayMin(DEFAULT_DELAY_MIN);
-    setDelayMax(DEFAULT_DELAY_MAX);
-    setBatchEvery(String(DEFAULT_BATCH_EVERY));
-    setBatchPauseMin(String(DEFAULT_BATCH_PAUSE_MIN));
-    setBatchPauseMax(String(DEFAULT_BATCH_PAUSE_MAX));
-  };
-
   // ---------- kirim ----------
-  const sendOne = async (number: string, message: string): Promise<{ ok: boolean; error?: string }> => {
+  const sendOne = async (number: string, message: string, typing = true): Promise<{ ok: boolean; error?: string }> => {
     try {
       const resp = await fetch("/api/scraper/wa/send", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        // typing: tampilkan status "mengetik…" manusiawi di chat penerima sebelum pesan terkirim
+        // typing=true → status "mengetik…" manusiawi sebelum pesan terkirim (menambah
+        // 0,8–10 dtk). typing=false → pesan langsung terkirim: dipakai untuk pesan
+        // PERTAMA (nomor pertama langsung jalan) dan pesan lanjutan (agar tepat
+        // tiba 5–15 dtk setelah pesan pertama, tidak bertambah durasi mengetik).
         // timeout 90 dtk — sesi WhatsApp yang tidak sehat bisa membuat kirim menggantung
-        body: JSON.stringify({ number, message, typing: true }),
+        body: JSON.stringify({ number, message, typing }),
         signal: AbortSignal.timeout(90_000),
       });
       const data = await resp.json().catch(() => null);
@@ -489,8 +537,6 @@ export default function PenawaranMassal({ waStatus, waChecked = true, onOpenWa }
       return { ok: false, error: e instanceof Error ? e.message : String(e) };
     }
   };
-
-  const pushLog = (l: SendLog) => setLogs((prev) => [l, ...prev].slice(0, 300));
 
   // jeda berdetik yang bisa dijeda / dilewati / dihentikan kapan pun.
   // DITUNGGU dengan TENGGAT WAKTU MUTLAK (bukan loop per-detik): browser
@@ -509,12 +555,14 @@ export default function PenawaranMassal({ waStatus, waChecked = true, onOpenWa }
     skipRef.current = false;
   };
 
-  // catat nomor berhasil terkirim utk pesan yang sedang dipakai
+  // catat nomor berhasil terkirim utk pesan tersimpan yang sedang dipakai
+  // (pengiriman hanya bisa dimulai saat pesan tidak sedang diedit — kirim selalu
+  // memakai teks tersimpan, sehingga hash catatan selalu konsisten)
   const rememberSent = (digits: string) => {
     setSentRecord((prev) => {
-      const cur = prev && prev.hash === msgHash ? prev.sent : [];
+      const cur = prev && prev.hash === savedHash ? prev.sent : [];
       const next: { hash: string; sent: string[] } = {
-        hash: msgHash,
+        hash: savedHash,
         sent: [...new Set([...cur, digits])].slice(-5000),
       };
       try { localStorage.setItem(LS_SENT, JSON.stringify(next)); } catch {}
@@ -537,26 +585,22 @@ export default function PenawaranMassal({ waStatus, waChecked = true, onOpenWa }
     }
     const dMin = Math.max(3, Math.floor(Number(delayMin) || 8));
     const dMax = Math.max(dMin, Math.floor(Number(delayMax) || 20));
-    const every = Math.max(0, Math.floor(Number(batchEvery) || 0));
-    const pMin = Math.max(1, Math.floor(Number(batchPauseMin) || DEFAULT_BATCH_PAUSE_MIN));
-    const pMax = Math.max(pMin, Math.floor(Number(batchPauseMax) || DEFAULT_BATCH_PAUSE_MAX));
 
     setSending(true);
     setPaused(false);
     pauseRef.current = false;
     stopRef.current = false;
     skipRef.current = false;
-    longPauseAccumRef.current = 0;
-    longPauseStartRef.current = null;
-    setLongLeft(0);
     setSentCount(0);
     setFailCount(0);
     setProgressIdx(0);
     setStartedAt(Date.now());
+    // bekukan rencana kirim: penyebut progres & dasar sisa-waktu tak berubah di tengah jalan
+    setRunPlan({ total: queue.length, estTotal: estTotalFor(queue.length) });
     let sent = 0;
     let failed = 0;
     let idx = 0;
-    let batchSent = 0; // NOMOR terkirim dalam batch berjalan — istirahat panjang tiap N nomor (pesan lanjutan tidak dihitung)
+    let lastGap = -1; // jeda antar pesan sebelumnya — dipakai agar jeda berurutan tidak pernah sama
 
     for (; idx < queue.length; idx++) {
       if (stopRef.current) break;
@@ -566,57 +610,39 @@ export default function PenawaranMassal({ waStatus, waChecked = true, onOpenWa }
       const r = queue[idx];
       setProgressIdx(idx + 1);
       const msg = renderTemplate(template, r);
-      const res = await sendOne(r.phoneDigits, msg);
+      // pesan pertama (nomor pertama) langsung dikirim tanpa simulasi mengetik;
+      // nomor berikutnya tetap dengan simulasi mengetik manusiawi
+      const res = await sendOne(r.phoneDigits, msg, idx > 0);
       if (res.ok) {
         sent++;
         setSentCount(sent);
-        batchSent++;
         rememberSent(r.phoneDigits);
-        pushLog({ t: Date.now(), name: r.name || fmtPhone(r.phoneDigits), phone: fmtPhone(r.phoneDigits), ok: true, msg: "terkirim" });
       } else {
         failed++;
         setFailCount(failed);
-        pushLog({ t: Date.now(), name: r.name || fmtPhone(r.phoneDigits), phone: fmtPhone(r.phoneDigits), ok: false, msg: res.error ?? "gagal" });
       }
 
       // pesan lanjutan ke chat yang sama — hanya jika pesan pertama berhasil.
-      // TIDAK menambah hitungan batch/sent — istirahat panjang tetap per NOMOR.
+      // Dikirim TANPA simulasi mengetik agar tepat tiba 5–15 dtk setelah pesan pertama.
       if (followUpMsg && res.ok && !stopRef.current) {
         const fDelay = FOLLOW_UP_DELAY_MIN_S + Math.floor(Math.random() * (FOLLOW_UP_DELAY_MAX_S - FOLLOW_UP_DELAY_MIN_S + 1));
         await waitSecs(fDelay);
         if (!stopRef.current) {
-          const res2 = await sendOne(r.phoneDigits, renderTemplate(followUpMsg, r));
-          if (res2.ok) {
-            pushLog({ t: Date.now(), name: r.name || fmtPhone(r.phoneDigits), phone: fmtPhone(r.phoneDigits), ok: true, msg: "lanjutan: terkirim" });
-          } else {
-            pushLog({ t: Date.now(), name: r.name || fmtPhone(r.phoneDigits), phone: fmtPhone(r.phoneDigits), ok: false, msg: "lanjutan: " + (res2.error ?? "gagal") });
-          }
+          await sendOne(r.phoneDigits, renderTemplate(followUpMsg, r), false);
         }
       }
 
-      // jeda antar pesan / istirahat batch — tidak menunggu setelah penerima terakhir
-      const moreLeft = idx < queue.length - 1;
-      if (moreLeft && every > 0 && batchSent >= every) {
-        // istirahat panjang setiap N NOMOR terkirim
-        skipRef.current = false;
-        pushLog({ t: Date.now(), name: "istirahat", phone: "", ok: true, msg: `batch ${every} nomor selesai — jeda ${pMin}–${pMax} mnt` });
-        const pause = pMin * 60 + Math.floor(Math.random() * ((pMax - pMin) * 60 + 1));
-        longPauseStartRef.current = Date.now();
-        // tenggat mutlak — kebal throttle timer tab latar belakang
-        const longDeadline = Date.now() + pause * 1000;
-        while (Date.now() < longDeadline) {
-          if (stopRef.current || skipRef.current) break;
-          if (pauseRef.current) { await sleep(300); continue; }
-          setLongLeft(Math.ceil((longDeadline - Date.now()) / 1000));
-          await sleep(Math.min(30000, Math.max(0, longDeadline - Date.now())));
+      // jeda antar pesan — diacak penuh di antara jeda minimal–maksimal (bukan
+      // selalu nilai tinggi), dan TIDAK BOLEH sama dengan jeda sebelumnya:
+      // sama → diacak ulang. Tidak menunggu setelah penerima terakhir.
+      if (idx < queue.length - 1) {
+        let d = lastGap;
+        if (dMax > dMin) {
+          while (d === lastGap) d = dMin + Math.floor(Math.random() * (dMax - dMin + 1));
+        } else {
+          d = dMin;
         }
-        longPauseAccumRef.current += Math.round((Date.now() - (longPauseStartRef.current ?? Date.now())) / 1000);
-        longPauseStartRef.current = null;
-        setLongLeft(0);
-        skipRef.current = false;
-        batchSent = 0;
-      } else if (moreLeft) {
-        const d = Math.floor(dMin + Math.random() * (dMax - dMin + 1));
+        lastGap = d;
         await waitSecs(d);
       }
     }
@@ -632,7 +658,9 @@ export default function PenawaranMassal({ waStatus, waChecked = true, onOpenWa }
     });
   };
 
-  const canStart = waConnected && queue.length > 0 && template.trim().length > 0 && !sending;
+  // kirim hanya boleh dimulai saat pesan sudah disimpan — perubahan yang belum
+  // ditekan Simpan tidak boleh terkirim (dan status "terkirim" mengikat ke pesan tersimpan)
+  const canStart = waConnected && queue.length > 0 && template.trim().length > 0 && !sending && !msgDirty;
 
   // ---------- render ----------
   return (
@@ -641,7 +669,7 @@ export default function PenawaranMassal({ waStatus, waChecked = true, onOpenWa }
         {/* kolom kiri: sumber + template */}
         <div className="lg:col-span-3 space-y-6">
           {/* langkah 1 — nomor penerima manual */}
-          <Card className="pt-3">
+          <Card className="pt-3 gap-3">
             <CardHeader className="pb-3">
               <CardTitle className="flex items-center gap-2 text-base">
                 <span className="h-6 w-6 rounded-lg bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 flex items-center justify-center text-xs font-bold">1</span>
@@ -696,23 +724,16 @@ export default function PenawaranMassal({ waStatus, waChecked = true, onOpenWa }
               <Textarea
                 value={numbersInput}
                 onChange={(e) => handleNumbersChange(e.target.value)}
+                onKeyDown={handleHistoryKeys(numbersHist, numbersLast, setNumbersInput)}
                 className="text-sm font-mono leading-relaxed numbers-textarea"
                   placeholder={"82395022596\n083125626838\n6285173230850\n+6282195256729\n601170046869\n+601112895220"}
                 spellCheck={false}
                 disabled={sending}
               />
-              <div className="text-xs text-muted-foreground flex flex-wrap items-center gap-x-3 gap-y-1">
-                <span className="font-medium text-emerald-600 dark:text-emerald-400">{queue.length} nomor siap kirim</span>
-                {parsed.dup > 0 && <span>{parsed.dup} duplikat dibuang</span>}
-                {parsed.invalid > 0 && <span className="text-amber-600 dark:text-amber-400">{parsed.invalid} tidak valid dibuang</span>}
-              </div>
-              {parsed.all.length > 0 && queue.length === 0 && (
-                <div className="flex items-center gap-2 text-xs text-amber-600 dark:text-amber-400">
-                  <AlertTriangle className="h-5 w-5 shrink-0 self-center" />
-                  <span className="leading-relaxed">
-                    <span className="block">Semua nomor sudah terkirim dengan pesan ini.</span>
-                    <span className="block">Ubah atau hapus pesannya agar dianggap belum terkirim, atau isi nomor baru.</span>
-                  </span>
+              {(parsed.dup > 0 || parsed.invalid > 0) && (
+                <div className="text-xs text-muted-foreground flex flex-wrap items-center gap-x-3 gap-y-1">
+                  {parsed.dup > 0 && <span>{parsed.dup} duplikat dibuang</span>}
+                  {parsed.invalid > 0 && <span className="text-amber-600 dark:text-amber-400">{parsed.invalid} tidak valid dibuang</span>}
                 </div>
               )}
               {fileError && (
@@ -731,11 +752,29 @@ export default function PenawaranMassal({ waStatus, waChecked = true, onOpenWa }
           </Card>
 
           {/* langkah 2 */}
-          <Card className="pt-3">
+          <Card className="pt-3 gap-3">
             <CardHeader className="pb-3">
               <CardTitle className="flex items-center gap-2 text-base">
                 <span className="h-6 w-6 rounded-lg bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 flex items-center justify-center text-xs font-bold">2</span>
                 Tulis pesan penawaran
+                <Button
+                  size="sm"
+                  className="relative ml-auto h-7 gap-1.5 px-2.5 text-xs cursor-pointer bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white shadow-xs"
+                  title={msgDirty ? "Ada perubahan belum disimpan" : "Simpan pesan penawaran & pesan lanjutan"}
+                  onClick={() => {
+                    try {
+                      localStorage.setItem(LS_TEMPLATE, template);
+                      localStorage.setItem(LS_FOLLOW_UP, followUp);
+                    } catch {}
+                    setSavedTpl(template);
+                    setSavedFu(followUp);
+                    showSavedPop("Pesan Berhasil Disimpan", "Perubahan pesan telah disimpan.");
+                  }}
+                  disabled={sending}
+                >
+                  <Save className="h-3 w-3" /> Simpan
+                  {msgDirty && <span className="kf-blink absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-amber-400 ring-1 ring-card" />}
+                </Button>
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-3">
@@ -785,101 +824,70 @@ export default function PenawaranMassal({ waStatus, waChecked = true, onOpenWa }
                     {"{placeholder}"} <ChevronRight className="h-3 w-3" />
                   </button>
                 )
-              ) : (
-                <p className="text-xs text-muted-foreground">
-                  Pilih file Excel di langkah 1 — placeholder dari judul kolomnya (mis. {"{Bisnis}"}, {"{Telepon}"}) muncul di sini.
-                </p>
-              )}
+              ) : null}
                 <Textarea
                   ref={taRef}
                   value={template}
-                  onChange={(e) => setTemplate(e.target.value)}
+                  onChange={(e) => {
+                    recordTextHistory(templateHist, templateLast, e.target.value);
+                    setTemplate(e.target.value);
+                  }}
+                  onKeyDown={handleHistoryKeys(templateHist, templateLast, setTemplate)}
                   rows={7}
                   className="text-sm leading-relaxed message-textarea"
                   placeholder="Tulis pesan penawaran…"
                   disabled={sending}
                 />
-              <div className="flex items-center justify-between text-xs text-muted-foreground">
-                <span>{template.length} karakter</span>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className={cn(
-                    "h-7 gap-1.5 px-2 text-xs cursor-pointer",
-                    template !== DEFAULT_TEMPLATE
-                      ? "text-amber-600 dark:text-amber-400 hover:bg-amber-500/10"
-                      : "text-muted-foreground"
-                  )}
-                  title="Kembalikan pesan ke bawaan"
-                  onClick={() => setTemplate(DEFAULT_TEMPLATE)}
-                  disabled={sending}
-                >
-                  <RotateCcw className="h-3 w-3" /> Default
-                </Button>
-              </div>
 
               <Separator className="bg-border/60" />
               <div className="space-y-1.5">
                 <Label className="text-xs">Pesan lanjutan (opsional)</Label>
                 <Textarea
                   value={followUp}
-                  onChange={(e) => setFollowUp(e.target.value)}
+                  onChange={(e) => {
+                    recordTextHistory(followUpHist, followUpLast, e.target.value);
+                    setFollowUp(e.target.value);
+                  }}
+                  onKeyDown={handleHistoryKeys(followUpHist, followUpLast, setFollowUp)}
                   rows={3}
                   className="text-sm leading-relaxed message-textarea message-textarea-sm"
                   placeholder={"Saya ada ide tampilannya untuk {Bisnis}. Boleh saya kirim contohnya?\n\nKosongkan untuk menonaktifkan."}
                   disabled={sending}
                 />
-                <div className="flex items-start justify-between gap-2">
-                  <p className="min-w-0 flex-1 text-xs leading-relaxed text-muted-foreground">
-                    Dikirim ke chat yang sama ±{FOLLOW_UP_DELAY_MIN_S}–{FOLLOW_UP_DELAY_MAX_S} detik setelah pesan pertama. Kosongkan untuk menonaktifkan.
-                  </p>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className={cn(
-                      "h-7 shrink-0 gap-1.5 px-2 text-xs cursor-pointer",
-                      followUp !== DEFAULT_FOLLOW_UP
-                        ? "text-amber-600 dark:text-amber-400 hover:bg-amber-500/10"
-                        : "text-muted-foreground"
-                    )}
-                    title="Kembalikan pesan lanjutan ke bawaan"
-                    onClick={() => setFollowUp(DEFAULT_FOLLOW_UP)}
-                  >
-                    <RotateCcw className="h-3 w-3" /> Default
-                  </Button>
-                </div>
               </div>
             </CardContent>
           </Card>
         </div>
 
-        {/* kolom kanan: filter + pengaturan + aksi */}
+        {/* kolom kanan: pengaturan + ringkasan + aksi */}
         <div className="lg:col-span-2 space-y-6">
-          {/* pengaturan kirim */}
-          <Card className="pt-3">
+          <Card className="pt-3 gap-3">
             <CardHeader className="pb-3">
               <CardTitle className="flex items-center gap-2 text-base">
                 <span className="h-6 w-6 rounded-lg bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 flex items-center justify-center text-xs font-bold">3</span>
                 Pengaturan kirim
                 <Button
-                  variant="ghost"
                   size="sm"
-                  className={cn(
-                    "ml-auto h-7 gap-1.5 px-2 text-xs cursor-pointer",
-                    settingsChanged
-                      ? "text-amber-600 dark:text-amber-400 hover:bg-amber-500/10"
-                      : "text-muted-foreground"
-                  )}
-                  title="Kembalikan pengaturan ke bawaan"
-                  onClick={resetSettings}
+                  className="relative ml-auto h-7 gap-1.5 px-2.5 text-xs cursor-pointer bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white shadow-xs"
+                  title={delayDirty ? "Ada perubahan belum disimpan" : "Simpan pengaturan kirim"}
+                  onClick={() => {
+                    try {
+                      localStorage.setItem(LS_DELAY, JSON.stringify({
+                        min: Number(delayMin) || 60,
+                        max: Number(delayMax) || 150,
+                      }));
+                    } catch {}
+                    setSavedDelay({ min: delayMin, max: delayMax });
+                    showSavedPop("Pengaturan Berhasil Disimpan", "Perubahan pengaturan telah disimpan.");
+                  }}
                   disabled={sending}
                 >
-                  <RotateCcw className="h-3 w-3" /> Default
+                  <Save className="h-3 w-3" /> Simpan
+                  {delayDirty && <span className="kf-blink absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-amber-400 ring-1 ring-card" />}
                 </Button>
-                <Clock className="h-3.5 w-3.5 text-muted-foreground" />
               </CardTitle>
             </CardHeader>
-            <CardContent className="space-y-3">
+            <CardContent className="space-y-4">
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1.5">
                   <Label htmlFor="delayMin" className="text-xs">Jeda minimal (detik)</Label>
@@ -904,43 +912,6 @@ export default function PenawaranMassal({ waStatus, waChecked = true, onOpenWa }
               )}
 
               <Separator className="bg-border/60" />
-              <div className="space-y-1.5">
-                <Label className="text-xs">Istirahat otomatis</Label>
-                <div className="grid grid-cols-3 gap-2">
-                  <div className="space-y-1">
-                    <Label htmlFor="batchEvery" className="text-xs text-muted-foreground">setiap (nomor)</Label>
-                    <Input id="batchEvery" type="number" min={0} max={50} value={batchEvery} disabled={sending}
-                      onChange={(e) => setBatchEvery(e.target.value)}
-                      onBlur={() => setBatchEvery(clampInputNum(batchEvery, 0, 50))}
-                      className="h-9 tabular-nums" />
-                  </div>
-                  <div className="space-y-1">
-                    <Label htmlFor="batchPauseMin" className="text-xs text-muted-foreground">jeda min (mnt)</Label>
-                    <Input id="batchPauseMin" type="number" min={1} max={120} value={batchPauseMin} disabled={sending}
-                      onChange={(e) => setBatchPauseMin(e.target.value)}
-                      onBlur={() => setBatchPauseMin(clampInputNum(batchPauseMin, 1, 120))}
-                      className="h-9 tabular-nums" />
-                  </div>
-                  <div className="space-y-1">
-                    <Label htmlFor="batchPauseMax" className="text-xs text-muted-foreground">jeda maks (mnt)</Label>
-                    <Input id="batchPauseMax" type="number" min={1} max={180} value={batchPauseMax} disabled={sending}
-                      onChange={(e) => setBatchPauseMax(e.target.value)}
-                      onBlur={() => setBatchPauseMax(clampInputNum(batchPauseMax, 1, 180))}
-                      className="h-9 tabular-nums" />
-                  </div>
-                </div>
-                <p className="text-xs leading-relaxed text-muted-foreground">
-                  {everyNum > 0
-                    ? <>Setelah <b>{everyNum} nomor terkirim</b> (pesan utama + lanjutannya selesai), pengiriman berhenti dulu <b>{pMinNum}–{pMaxNum} menit</b> (acak) sebelum lanjut ke nomor berikutnya. Isi 0 di &ldquo;setiap&rdquo; untuk mematikan.</>
-                    : "Istirahat otomatis mati — isi angka di kolom \u201csetiap\u201d untuk mengaktifkan."}
-                </p>
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* ringkasan & aksi */}
-          <Card className="border-emerald-500/25">
-            <CardContent className="space-y-4 pt-5">
               <div className="grid grid-cols-3 gap-2 text-center">
                 <div className="rounded-xl border border-border bg-muted/50 py-2.5">
                   <div className="text-lg font-bold tabular-nums">{queue.length}</div>
@@ -955,9 +926,11 @@ export default function PenawaranMassal({ waStatus, waChecked = true, onOpenWa }
                   <div className="text-[11px] text-muted-foreground uppercase tracking-wider">gagal</div>
                 </div>
               </div>
-              {queue.length > 0 && (
+              {/* pra-kirim saja — saat mengirim antrian menyusut (yang terkirim
+                  keluar dari daftar) sehingga estimasi berbasis antrian menyesatkan */}
+              {!sending && queue.length > 0 && (
                 <div className="text-xs text-muted-foreground flex items-center gap-1.5">
-                  <Clock className="h-3.5 w-3.5 shrink-0" /> Estimasi total ±{estLabel} ({everyNum > 0 ? `jeda ${delayMin}–${delayMax} dtk · istirahat ${pMinNum}–${pMaxNum} mnt tiap ${everyNum} nomor` : `jeda ${delayMin}–${delayMax} dtk`}{followUpMsg ? ` · lanjutan ${FOLLOW_UP_DELAY_MIN_S}–${FOLLOW_UP_DELAY_MAX_S} dtk` : ""})
+                  <Clock className="h-3.5 w-3.5 shrink-0" /> Estimasi total ±{estLabel} (pesan pertama langsung terkirim · jeda {delayMin}–{delayMax} dtk{followUpMsg ? ` · lanjutan ${FOLLOW_UP_DELAY_MIN_S}–${FOLLOW_UP_DELAY_MAX_S} dtk setelah pesan pertama` : ""})
                 </div>
               )}
 
@@ -976,7 +949,7 @@ export default function PenawaranMassal({ waStatus, waChecked = true, onOpenWa }
                       <Loader2 className="h-3.5 w-3.5 animate-spin" />
                       Berjalan {fmtDur(elapsedS)}
                     </span>
-                    <span className="text-muted-foreground tabular-nums">sisa ±{fmtDur(etaS)}</span>
+                    <span className="text-muted-foreground tabular-nums">sisa {fmtMenit(etaS)}</span>
                   </div>
                   <div className="h-2 overflow-hidden rounded-full bg-muted">
                     <div
@@ -985,16 +958,35 @@ export default function PenawaranMassal({ waStatus, waChecked = true, onOpenWa }
                     />
                   </div>
                   <div className="flex items-center justify-between text-[10px] text-muted-foreground tabular-nums">
-                    <span>{progressIdx} dari {queue.length} penerima terproses</span>
+                    <span>{progressIdx} dari {planTotal} penerima terproses</span>
                     <span>{Math.round(progressFrac * 100)}%</span>
                   </div>
                 </div>
               )}
 
               {!sending ? (
-                <Button className="w-full h-11 gap-2 text-base cursor-pointer bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 shadow-lg shadow-emerald-500/20" disabled={!canStart} onClick={() => { void startSend(); }}>
-                  <Send className="h-4.5 w-4.5" /> Mulai Kirim {queue.length > 0 ? `(${queue.length})` : ""}
-                </Button>
+                <div className="space-y-2">
+                  <Button className="w-full h-11 gap-2 text-base cursor-pointer bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 shadow-lg shadow-emerald-500/20" disabled={!canStart} onClick={() => { void startSend(); }}>
+                    <Send className="h-4.5 w-4.5" /> Mulai Kirim {queue.length > 0 ? `(${queue.length})` : ""}
+                  </Button>
+                  {msgDirty && queue.length > 0 && template.trim().length > 0 && waConnected && (
+                    <div className="flex items-start gap-1.5 text-xs text-amber-600 dark:text-amber-400">
+                      <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+                      <span>Ada perubahan pesan belum disimpan — klik <b>Simpan</b> pada langkah 2 dulu untuk mengaktifkan pengiriman.</span>
+                    </div>
+                  )}
+                  {/* peringatan hanya relevan saat WhatsApp terhubung — tanpa sesi,
+                      antrian memang belum bisa dihitung "sudah terkirim" secara bermakna */}
+                  {waConnected && parsed.all.length > 0 && queue.length === 0 && (
+                    <div className="flex items-center gap-2 text-xs text-amber-600 dark:text-amber-400">
+                      <AlertTriangle className="h-5 w-5 shrink-0 self-center" />
+                      <span className="leading-relaxed">
+                        <span className="block">Semua nomor sudah menerima pesan ini.</span>
+                        <span className="block">Ubah pesan untuk mengirim ulang, atau tambahkan nomor baru.</span>
+                      </span>
+                    </div>
+                  )}
+                </div>
               ) : (
                 <div className="grid grid-cols-2 gap-2">
                   {paused ? (
@@ -1009,7 +1001,7 @@ export default function PenawaranMassal({ waStatus, waChecked = true, onOpenWa }
                   <Button variant="destructive" className="h-10 gap-1.5 cursor-pointer" onClick={() => { stopRef.current = true; pauseRef.current = false; }}>
                     <Square className="h-4 w-4" /> Hentikan
                   </Button>
-                  {(countdown > 0 || longLeft > 0) && (
+                  {countdown > 0 && (
                     <Button variant="outline" className="h-10 gap-1.5 cursor-pointer col-span-2" onClick={() => { skipRef.current = true; }}>
                       <FastForward className="h-4 w-4" /> Lewati jeda — lanjut sekarang
                     </Button>
@@ -1031,68 +1023,30 @@ export default function PenawaranMassal({ waStatus, waChecked = true, onOpenWa }
         </div>
       </div>
 
-      {/* progres + log */}
-      {(sending || logs.length > 0) && (
-        <Card className="pt-3">
-          <CardHeader className="pb-3">
-            <CardTitle className="flex items-center gap-2 text-base">
-              {sending ? <Loader2 className="h-4 w-4 animate-spin text-emerald-500" /> : <Send className="h-4 w-4 text-emerald-500" />}
-              Progres pengiriman
-              {sending && paused && <Badge variant="outline" className="border-amber-500/40 text-amber-600">dijeda</Badge>}
-              {sending && !paused && longLeft > 0 && (
-                <Badge variant="outline" className="tabular-nums border-amber-500/40 text-amber-600 dark:text-amber-400">
-                  istirahat batch — sisa {fmtDur(longLeft)}
-                </Badge>
-              )}
-              {sending && !paused && countdown > 0 && (
-                <Badge variant="outline" className="tabular-nums border-emerald-500/40 text-emerald-600 dark:text-emerald-400">
-                  pesan berikutnya dalam {countdown} dtk
-                </Badge>
-              )}
-            </CardTitle>
-            <CardDescription className="tabular-nums">
-              {progressIdx > 0 ? `Mengirim ${progressIdx} dari ${queue.length}` : "Belum dimulai"} — riwayat 300 terakhir ditampilkan.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            {/* bar beranimasi (shimmer) — bergerak selama proses kirim berjalan */}
-            <div className="h-2 overflow-hidden rounded-full bg-muted">
-              <div
-                className="kf-send-progress h-full rounded-full bg-gradient-to-r from-emerald-500 to-teal-500 transition-[width] duration-700"
-                style={{ width: `${Math.max(queue.length > 0 ? (progressIdx / queue.length) * 100 : 0, 2)}%` }}
-              />
-            </div>
-            {sending && (
-              <div className="flex items-center justify-between text-xs tabular-nums">
-                <span className="font-medium text-emerald-600 dark:text-emerald-400">
-                  {Math.round(queue.length > 0 ? (progressIdx / queue.length) * 100 : 0)}% terproses
-                </span>
-                <span className="text-muted-foreground">
-                  ⏱ {fmtDur(elapsedS)} berjalan · sisa ±{fmtDur(etaS)}
-                </span>
-              </div>
-            )}
-            <ScrollArea className="h-56 rounded-xl border border-border/60">
-              <div className="p-2 font-mono text-xs space-y-1">
-                {logs.length === 0 ? (
-                  <div className="px-2 py-1.5 text-muted-foreground italic">Belum ada aktivitas.</div>
-                ) : (
-                  logs.map((l, i) => (
-                    <div key={`${l.t}-${i}`} className={cn("flex items-start gap-2 rounded-lg px-2 py-1.5", i === 0 && "bg-muted/50")}>
-                      {l.ok
-                        ? <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500 shrink-0 mt-0.5" />
-                        : <XCircle className="h-3.5 w-3.5 text-red-500 shrink-0 mt-0.5" />}
-                      <span className="text-muted-foreground tabular-nums shrink-0">{fmtTime(l.t)}</span>
-                      <span className="min-w-0 flex-1 truncate" title={`${l.name} — ${l.phone}`}>
-                        <b>{l.name}</b> <span className="text-muted-foreground">{l.phone}</span> — {l.msg}
-                      </span>
-                    </div>
-                  ))
-                )}
-              </div>
-            </ScrollArea>
-          </CardContent>
-        </Card>
+      {/* notifikasi "Berhasil Disimpan" — dirender via portal ke <body> karena
+          induk halaman (animate-fade-up) menyimpan transform yang membuat
+          position:fixed relatif ke elemen itu, bukan ke layar; tanpa portal
+          notifikasi tidak terlihat saat halaman digulir ke bawah.
+          Tanpa tombol tutup — menutup sendiri setelah ±2,4 dtk */}
+      {savedPop && createPortal(
+        <div
+          key={savedSeq}
+          className={cn(
+            "kf-notify fixed left-1/2 top-4 z-50 flex w-fit max-w-[calc(100%-2rem)] items-center gap-3 rounded-2xl border border-emerald-500/30 bg-card p-4 pr-6 shadow-2xl shadow-emerald-500/10",
+            savedClosing && "kf-notify-out"
+          )}
+          role="status"
+          aria-live="polite"
+        >
+          <div className="kf-pop-circle flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-emerald-500 to-teal-600 shadow-md shadow-emerald-500/30">
+            <Check className="kf-pop-check h-6 w-6 text-white" strokeWidth={3.5} />
+          </div>
+          <div className="min-w-0 flex-1">
+            <h3 className="text-sm font-bold">{savedPop.title}</h3>
+            <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">{savedPop.desc}</p>
+          </div>
+        </div>,
+        document.body
       )}
 
       {/* editor spreadsheet ala Google Sheets. Dimount hanya saat terbuka agar

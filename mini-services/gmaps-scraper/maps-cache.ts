@@ -30,8 +30,26 @@ async function save(): Promise<void> {
   if (!mem) return;
   try {
     mkdirSync(path.dirname(FILE), { recursive: true });
-    await Bun.write(FILE, JSON.stringify(mem));
+    // v13.1: tulis atomik (tmp → rename) agar proses yang berhenti di tengah
+    // penulisan tidak pernah meninggalkan file cache setengah jadi.
+    const tmp = FILE + ".tmp";
+    await Bun.write(tmp, JSON.stringify(mem));
+    const { renameSync } = await import("node:fs");
+    renameSync(tmp, FILE);
   } catch {}
+}
+
+/** Tulis terjadwal (debounce 2 dtk): penulisan puluhan-MB per entri membuat
+ *  fase detail lumpuh (165 tempat = 165 tulis penuh). Satu tulis gabungan
+ *  paling sering tiap 2 dtk — aman: crash terburuk kehilangan ≤2 dtk cache. */
+let saveTimer: ReturnType<typeof setTimeout> | null = null;
+function saveSoon(): void {
+  if (saveTimer) return;
+  saveTimer = setTimeout(() => {
+    saveTimer = null;
+    void save();
+  }, 2000);
+  (saveTimer as any)?.unref?.();
 }
 
 /** Kunci cache pencarian: query + viewport (kuadran). */
@@ -62,7 +80,7 @@ export async function mapsSearchPut(key: string, places: any[]): Promise<void> {
     keys.sort((a, b) => m!.search[a].t - m!.search[b].t);
     for (const k of keys.slice(0, keys.length - 400)) delete m!.search[k];
   }
-  await save();
+  saveSoon();
 }
 
 /** Ambil detail tempat dari cache; null bila tidak ada / kadaluarsa. */
@@ -83,5 +101,5 @@ export async function mapsDetailPut(placeId: string, data: any): Promise<void> {
     keys.sort((a, b) => m!.detail[a].t - m!.detail[b].t);
     for (const k of keys.slice(0, keys.length - 5000)) delete m!.detail[k];
   }
-  await save();
+  saveSoon();
 }

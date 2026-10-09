@@ -7,6 +7,8 @@ const nextConfig: NextConfig = {
     ignoreBuildErrors: true,
   },
   reactStrictMode: false,
+  // matikan tombol indikator dev Next.js (logo "N" bulat di pojok layar)
+  devIndicators: false,
 };
 
 export default nextConfig;

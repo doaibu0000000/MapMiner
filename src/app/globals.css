@@ -397,8 +397,8 @@ input[type="number"] {
   resize: vertical;
 }
 .message-textarea-sm {
-  height: 7rem;
-  min-height: 5rem;
+  height: 4.5rem;
+  min-height: 3.5rem;
 }
 
 /* Baris placeholder chip: bisa digeser horizontal tapi scrollbar disembunyikan
@@ -413,6 +413,9 @@ input[type="number"] {
 
 /* Cegah kedipan pindah tab saat reload: sebelum React hidup, sesuaikan pane
    yang tampil dengan tab tersimpan (atribut <html> dipasang script awal) */
+html[data-mm-tab="media"] [data-mm-pane="prospek"] { display: none !important; }
+html[data-mm-tab="media"] [data-mm-pane="media"] { display: block !important; }
+html[data-mm-tab="media"] [data-mm-pane="penawaran"] { display: none !important; }
 html[data-mm-tab="penawaran"] [data-mm-pane="prospek"] { display: none !important; }
 html[data-mm-tab="penawaran"] [data-mm-pane="penawaran"] { display: block !important; }
 
@@ -500,4 +503,79 @@ textarea:focus-visible:not([data-mm-cell]) {
 }
 @media (prefers-reduced-motion: reduce) {
   .kf-send-progress::after { animation: none; display: none; }
+}
+
+/* Notifikasi "Simpan Berhasil": kartu turun dari atas layar, ceklis bawaan
+   Lucide digambar progresif (stroke-dashoffset) saat kartu muncul */
+@keyframes kf-pop-in {
+  0% { transform: scale(0.4); opacity: 0; }
+  60% { transform: scale(1.08); opacity: 1; }
+  100% { transform: scale(1); opacity: 1; }
+}
+@keyframes kf-check-draw {
+  0% { stroke-dashoffset: -24; }
+  100% { stroke-dashoffset: 0; }
+}
+@keyframes kf-notify-in {
+  0% { transform: translate(-50%, -140%); opacity: 0; }
+  100% { transform: translate(-50%, 0); opacity: 1; }
+}
+@keyframes kf-notify-out {
+  0% { transform: translate(-50%, 0); opacity: 1; }
+  100% { transform: translate(-50%, -140%); opacity: 0; }
+}
+.kf-pop-circle { animation: kf-pop-in 0.45s cubic-bezier(0.22, 1.2, 0.36, 1) both; }
+.kf-pop-check path {
+  stroke-dasharray: 24;
+  stroke-dashoffset: -24;
+  animation: kf-check-draw 0.45s ease-in-out 0.3s both;
+}
+.kf-notify { animation: kf-notify-in 0.4s cubic-bezier(0.22, 1.2, 0.36, 1) both; }
+.kf-notify-out { animation: kf-notify-out 0.3s ease-in both; }
+
+/* Titik penanda "ada perubahan belum disimpan" pada tombol Simpan — kedip PENUH
+   tanpa syarat (permintaan eksplisit: harus terlihat berkedip di semua perangkat,
+   termasuk Windows dengan "Animation effects" mati). Murni opacity — tanpa
+   transform, aman utk pengguna sensitif gerak. */
+@keyframes kf-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.1; }
+}
+.kf-blink {
+  animation: kf-blink 1.6s ease-in-out infinite !important;
+}
+
+/* Sembunyikan scrollbar halaman utama — gulir tetap berfungsi
+   (roda mouse, sentuh, PgUp/PgDn, spasi); hanya jejak visualnya yang dihilangkan */
+html {
+  scrollbar-width: none;      /* Firefox */
+  -ms-overflow-style: none;   /* Edge lama */
+}
+html::-webkit-scrollbar,
+body::-webkit-scrollbar {
+  display: none;              /* Chrome / Safari / Edge */
+}
+
+/* Saklar WhatsApp (requireWa): tampilan MATI sejak frame pertama bila preferensi
+   tersimpan "0" — skrip awal di layout.tsx menyetel data-require-wa di <html>
+   SEBELUM paint, menutup jeda sebelum hydration (HTML SSR membawa state default
+   "checked" sehingga tanpa ini saklar kedip nyala-sekejap saat reload). */
+html[data-require-wa="0"] [data-slot="switch"]#requireWa {
+  background-color: var(--input) !important;
+}
+html[data-require-wa="0"] [data-slot="switch"]#requireWa [data-slot="switch-thumb"] {
+  transform: translateX(0) !important;
+  background-color: var(--background) !important; /* tema terang: thumb putih */
+}
+html.dark[data-require-wa="0"] [data-slot="switch"]#requireWa [data-slot="switch-thumb"] {
+  background-color: var(--foreground) !important; /* tema gelap: thumb terang */
+}
+
+/* KUNCI ANIMASI selama saklar belum "siap" (data-wa-pending dipasang React saat
+   masih tersembunyi): perpindahan state nyala→mati pasca-hydration TIDAK boleh
+   dianimasikan — thumb harus diam. Tanpa ini thumb terlihat mengeser kanan→kiri
+   pada saat gerbang opacity dibuka, karena Radix memakai transition-transform. */
+[data-slot="switch"][data-wa-pending],
+[data-slot="switch"][data-wa-pending] [data-slot="switch-thumb"] {
+  transition: none !important;
 }

@@ -1,8 +1,10 @@
 // Engine scraping Google Maps:
-// 1) Load halaman search Google Maps (JS Google melakukan paginasi sendiri saat scroll)
-// 2) Intercept respons RPC tbm=map → parse semua place
+// 1) v13: RPC tbm=map dipanggil LANGSUNG via fetch murni (search-rpc.ts) —
+//    halaman awal + paginasi offset, tanpa browser sama sekali
+// 2) Jalur browser (buka halaman + scroll + intercept) hanya FALLBACK bila
+//    jalur langsung gagal / terindikasi diblokir
 // 3) Quadrant-split otomatis jika hasil mendekati batas ~120/query
-// 4) Ambil detail tiap place (telepon, website, jam buka) via navigasi place_id
+// 4) Ambil detail tiap place via RPC preview/place (HTTP murni, fallback browser)
 // 5) Gabungkan + dedupe berdasar cid
 
 import type { ScrapeJob, Place, JobLog } from "./types";
@@ -15,15 +17,17 @@ import { waCheckNumbers, waDeepCheckNumbers, toWaDigits, waCacheStoreVerdicts } 
 import { mapsSearchKey, mapsSearchGet, mapsSearchPut, mapsDetailGet, mapsDetailPut } from "./maps-cache";
 import { waServiceConnected, waServiceCheck } from "./wa-service";
 import { fetchDetailFast } from "./fast-detail";
+import { searchDirect, type DirectViewport } from "./search-rpc";
 
 const MAX_SCROLL_ROUNDS = 45;
 const END_MARKERS = ["akhir daftar", "end of the list", "anda telah melihat semua"];
 const CAP_THRESHOLD = 110;      // >= hasil ini → quadrant split
 const MAX_PLACES = 3000;        // pengaman absolut
 const MAX_QUADRANT_DEPTH = 2;   // zoom+2 maksimum
-// v11.6: detail kini diambil via HTTP langsung (tanpa tab browser) — 8 pekerja
-// paralel aman karena tiap permintaan cuma satu GET ringan, bukan render halaman.
-const DETAIL_CONCURRENCY = 8;   // jumlah pekerja paralel saat ambil detail
+// v13.1: detail 1-2 probe ringan per tempat via google-guard (p-limit terpusat
+// 16 inflight global + backoff adaptif) — 12 pekerja hanya membagi antrean,
+// laju sebenarnya dikendalikan guard agar kencang TAPI aman dari blokir IP.
+const DETAIL_CONCURRENCY = 16;  // jumlah pekerja paralel saat ambil detail
 const EMAIL_CONCURRENCY = 10;   // fetch website paralel saat cari email (fetch ringan, bukan browser)
 
 // ---- pengaman anti-hang (v10): job tidak boleh menggantung selamanya ----
@@ -37,6 +41,21 @@ const rnd = (min: number, max: number) => min + Math.random() * (max - min);
 
 export class ScrapeEngine {
   private bm = new BrowserManager();
+  /** v13: beruntun varian jalur langsung yang mengembalikan 0 hasil — ≥3 beruntun
+   *  dianggap Google membatasi diam-diam → varian berikutnya dipaksa jalur browser. */
+  private directEmptyStreak = 0;
+  /** v13.2: set cid per job — serapan duplikat hasil O(1) saat scraping, pengganti
+   *  scan `job.places.some(...)` O(n²) di setiap kartu. */
+  private cidSeen = new WeakMap<ScrapeJob, Set<string>>();
+
+  private cidSetOf(job: ScrapeJob): Set<string> {
+    let s = this.cidSeen.get(job);
+    if (!s) {
+      s = new Set<string>();
+      this.cidSeen.set(job, s);
+    }
+    return s;
+  }
 
   /** Cek apakah suatu job masih boleh berjalan */
   private alive(job: ScrapeJob): boolean {
@@ -89,7 +108,7 @@ export class ScrapeEngine {
   private async runSearchVariant(
     job: ScrapeJob,
     query: string,
-    viewport?: { lat: number; lng: number; zoom: number },
+    viewport?: DirectViewport,
     kwCollector?: Place[],
   ): Promise<{ newPlaces: number; totalInFeed: number; viewport: [number, number, number] | null; blocked: boolean; cached: boolean }> {
     // CACHE: hasil pencarian yang sama (query + viewport) dalam 72 jam dipakai
@@ -98,6 +117,7 @@ export class ScrapeEngine {
     const cachedPlaces = await mapsSearchGet(cacheKey);
     if (cachedPlaces && cachedPlaces.length > 0) {
       const minReviews = job.minReviews ?? 0;
+      const seen = this.cidSetOf(job);
       let added = 0;
       for (const place of cachedPlaces) {
         // v12.6: masuk kolektor kata kunci TANPA filter — bbox kuadran harus
@@ -105,18 +125,64 @@ export class ScrapeEngine {
         // kuadran pun kena cache di run berikutnya)
         kwCollector?.push(place);
         if (minReviews > 0 && place.reviewsCount != null && place.reviewsCount < minReviews) continue;
-        if (job.places.some((p) => p.cid === place.cid)) continue;
+        if (seen.has(place.cid)) continue; // v13.2: dedup O(1), buang seketika
         job.places.push(place);
+        seen.add(place.cid);
         added++;
       }
       this.log(job, "info", `"${query}" → ${cachedPlaces.length} tempat dari cache (baru +${added}) — scroll halaman pencarian dilewati.`);
       return { newPlaces: added, totalInFeed: cachedPlaces.length, viewport: null, blocked: false, cached: true };
     }
 
+    // v13.0 JALUR LANGSUNG: RPC tbm=map via fetch murni (tanpa browser) —
+    // halaman awal + paginasi offset sampai daftar habis. Semantik penyimpanan
+    // identik dengan jalur browser: dedup cid, kolektor kuadran netral, filter
+    // ulasan diterapkan saat baca (cache tetap netral).
+    const direct = await searchDirect(query, viewport, {
+      isAlive: () => this.alive(job),
+      maxPlaces: Math.max(0, MAX_PLACES - job.places.length),
+    }).catch(() => null);
+    if (direct && direct.ok) {
+      const minReviews = job.minReviews ?? 0;
+      const seen = this.cidSetOf(job);
+      const collected: Place[] = [];
+      const collectedSet = new Set<string>();
+      let newPlaces = 0;
+      let skippedReviews = 0;
+      for (const place of direct.places) {
+        if (!collectedSet.has(place.cid)) { collectedSet.add(place.cid); collected.push({ ...place }); }
+        kwCollector?.push(place);
+        if (minReviews > 0 && place.reviewsCount != null && place.reviewsCount < minReviews) { skippedReviews++; continue; }
+        if (seen.has(place.cid)) continue; // v13.2: duplikat antar varian dibuang seketika
+        job.places.push(place);
+        seen.add(place.cid);
+        newPlaces++;
+      }
+      if (direct.places.length > 0) await mapsSearchPut(cacheKey, collected).catch(() => {});
+      if (direct.places.length > 0) {
+        this.directEmptyStreak = 0;
+        this.log(job, "info", `"${query}" → ${direct.places.length} kartu (${newPlaces} baru) via RPC langsung ${direct.pages} halaman — tanpa browser.`);
+        if (skippedReviews > 0) {
+          this.log(job, "info", `${skippedReviews} tempat dilewati — ulasannya di bawah ${minReviews} sejak daftar hasil.`);
+        }
+        return { newPlaces, totalInFeed: direct.places.length, viewport: null, blocked: false, cached: false };
+      }
+      this.directEmptyStreak++;
+      if (this.directEmptyStreak < 3) {
+        this.log(job, "info", `"${query}" → 0 hasil (RPC langsung).`);
+        return { newPlaces: 0, totalInFeed: 0, viewport: null, blocked: false, cached: false };
+      }
+      // ≥3 varian kosong beruntun: Google terindikasi membatasi diam-diam —
+      // paksa jalur browser utk varian ini agar deteksi blokir tetap jalan.
+      this.log(job, "warn", `${this.directEmptyStreak} varian berturut 0 hasil via RPC langsung — beralih ke jalur browser.`);
+      this.directEmptyStreak = 0;
+    } else if (direct && !direct.ok) {
+      this.log(job, "warn", `RPC langsung gagal${direct.blocked ? " (terindikasi diblokir)" : ` (${direct.error ?? "?"})`} — beralih ke jalur browser untuk "${query}".`);
+    }
+
     const page = await this.bm.newPage();
     const capturedBodies: string[] = [];
     let lastViewport: [number, number, number] | null = null;
-
     const onResponse = async (resp: any) => {
       const url = resp.url();
       if (url.includes("tbm=map") && resp.request().method() === "GET") {
@@ -234,19 +300,22 @@ export class ScrapeEngine {
     let newPlaces = 0;
     let skippedReviews = 0;
     const minReviews = job.minReviews ?? 0;
+    const seen = this.cidSetOf(job);
     const collected: Place[] = []; // utk cache hasil varian ini — NETRAL tanpa filter
+    const collectedSet = new Set<string>();
     const addPlace = (place: Place): boolean => {
       // kloning: cache TIDAK boleh memegang referensi objek hidup — mutasi fase
       // selanjutnya (waOk, detailStatus) akan bocor ke job-job berikutnya.
       // v12.6: cache diisi TANPA filter review (netral) — filter minReviews
       // diterapkan saat membaca cache, jadi run dgn ambang beda tetap data lengkap.
-      if (!collected.some((p) => p.cid === place.cid)) collected.push({ ...place });
+      if (!collectedSet.has(place.cid)) { collectedSet.add(place.cid); collected.push({ ...place }); }
       // v12.6: masuk kolektor kata kunci TANPA filter dedup global — bbox kuadran
       // harus deterministik antar run agar pusat kuadran sama → kuadran kena cache
       kwCollector?.push(place);
       if (minReviews > 0 && place.reviewsCount != null && place.reviewsCount < minReviews) { skippedReviews++; return false; }
-      if (job.places.some((p) => p.cid === place.cid)) return false;
+      if (seen.has(place.cid)) return false; // v13.2: dedup O(1), buang seketika
       job.places.push(place);
+      seen.add(place.cid);
       newPlaces++;
       return true;
     };
@@ -370,12 +439,17 @@ export class ScrapeEngine {
     if (cachedDetail) return cachedDetail;
 
     // v11.6 JALUR CEPAT: RPC /maps/preview/place dipanggil LANGSUNG via HTTP
-    // (tanpa tab browser) — ±0,2-0,8 dtk vs 2-4+ dtk render halaman. Google acak
-    // mengirim varian respons tanpa blok jumlah ulasan, jadi bila angka ulasan
-    // belum terbaca diulang (maks 3) — filter review minimal butuh angka itu.
-    const ctx = await this.bm.getContext();
-    const fast = await fetchDetailFast(ctx, place.cid);
-    if (fast && fast.reviewsCount != null) {
+    // (v13: fetch global dulu — browser hanya dihidupkan bila fetch gagal) —
+    // ±0,2-0,8 dtk vs 2-4+ dtk render halaman. Google acak mengirim varian
+    // respons tanpa blok jumlah ulasan, jadi bila angka ulasan belum terbaca
+    // diulang (maks 6) — filter review minimal butuh angka itu.
+    const fast = await fetchDetailFast(() => this.bm.getContext().catch(() => null), place.cid);
+    if (fast) {
+      // v13.1: terima hasil RPC apa adanya. Varian kompak tanpa angka ulasan
+      // setelah 6 percobaan = tempat memang tanpa ulasan (teruji: tempat
+      // ber-ulasan selalu terbaca ≤6 percobaan) — render halaman browser tidak
+      // menambah apa pun; angka ulasan daftar mengisi lewat mergeDetail bila ada.
+      // Browser fallback hanya bila RPC gagal total (fast === null).
       await mapsDetailPut(place.placeId, fast).catch(() => {});
       return fast;
     }
@@ -577,7 +651,10 @@ export class ScrapeEngine {
               break;
             }
             job.progress.phase = `Kuadran ${q.lat.toFixed(3)}, ${q.lng.toFixed(3)}…`;
-            const res = await this.runSearchVariant(job, `${keyword} di ${city}`, { lat: q.lat, lng: q.lng, zoom }, kwCollector);
+            // spanMeters = tinggi area kuadran (2×halfLat) dalam meter — lebih
+            // presisi daripada derivasi zoom utk RPC langsung
+            const quadSpanMeters = halfLat * 2 * 111320;
+            const res = await this.runSearchVariant(job, `${keyword} di ${city}`, { lat: q.lat, lng: q.lng, zoom, spanMeters: quadSpanMeters }, kwCollector);
             job.variants.push({
               query: `${keyword} di ${city}`,
               url: this.searchUrl(`${keyword} di ${city}`, q.lat, q.lng, zoom),
@@ -623,10 +700,10 @@ export class ScrapeEngine {
   /** Fase detail: telepon, website, jam buka untuk tiap place — paralel (2 worker) */
   private async detailsPhase(job: ScrapeJob): Promise<void> {
     const targets = job.places.filter((p) => p.detailStatus === "pending" && p.placeId);
-    // v11.6: filter review minimal berjalan DINAMIS selama detail — angka ulasan
-    // yang terbukti di bawah ambang langsung membuang tempatnya (tanpa menunggu).
-    const minReviews = job.minReviews ?? 0;
-    let droppedReviews = 0;
+    // v13.4 (permintaan pengguna): fase detail MURNI PENGUMPUL DATA — semua
+    // tempat diambil detailnya TANPA pembuangan di tengah jalan. Seluruh
+    // penyaringan (review minimal, telepon, duplikat nomor, WhatsApp) berjalan
+    // SETELAH fase ini selesai, sebagai rangkaian pemilahan akhir.
     job.progress.detailsTotal = targets.length;
     job.progress.detailsDone = 0;
     job.progress.phase = `Mengambil detail tempat (telepon, website, jam buka)${DETAIL_CONCURRENCY > 1 ? ` — ${DETAIL_CONCURRENCY} pekerja paralel` : ""}…`;
@@ -689,14 +766,6 @@ export class ScrapeEngine {
           mergeDetail(place, detail);
           place.detailStatus = "ok";
           failStreak = 0;
-          // v11.6: PENERAPAN REVIEW MINIMAL INSTAN — begitu jumlah ulasan terbaca
-          // dan terbukti di bawah ambang, tempat dibuang detik itu juga. Keputusan
-          // filter review minimal selesai bersamaan dengan detail terakhir.
-          if (minReviews > 0 && place.reviewsCount != null && place.reviewsCount < minReviews) {
-            const ix = job.places.indexOf(place);
-            if (ix >= 0) job.places.splice(ix, 1);
-            droppedReviews++;
-          }
         } else {
           place.detailStatus = "failed";
           failed++;
@@ -714,15 +783,14 @@ export class ScrapeEngine {
         if (job.progress.detailsDone % 10 === 0 || job.progress.detailsDone === job.progress.detailsTotal) {
           job.progress.phase = `Detail ${job.progress.detailsDone}/${job.progress.detailsTotal} tempat…`;
         }
-        await sleep(rnd(200, 500));
+        // v13.1: jeda antar tempat dipangkas — laju sebenarnya dikendalikan
+        // google-guard (p-limit terpusat + backoff adaptif), bukan sleep ini
+        await sleep(rnd(40, 120));
       }
     };
 
     await Promise.all(Array.from({ length: DETAIL_CONCURRENCY }, (_, w) => worker(w)));
 
-    if (droppedReviews > 0) {
-      this.log(job, "info", `Filter review minimal ${minReviews} (cepat, sambil detail): ${droppedReviews} tempat dibuang — ulasannya terbukti di bawah ambang.`);
-    }
     if (failed > 0) {
       this.log(job, "warn", `${failed} tempat tidak bisa diambil detailnya (data dasar tetap disimpan).`);
     }
@@ -844,7 +912,6 @@ export class ScrapeEngine {
       job.progress.phase = "Mencari email dari website…";
       this.log(job, "info", `Mencari email kontak dari website — "${job.keyword}" di "${job.city}"…`);
       try {
-        await this.bm.getBrowser(); // warm-up browser (konsistensi perilaku, tak dipakai utk fetch)
         await this.emailPhase(job);
         if (!this.alive(job)) { job.progress.phase = "Dibatalkan"; return; }
         this.finalize(job);
@@ -868,7 +935,8 @@ export class ScrapeEngine {
     }
 
     try {
-      await this.bm.getBrowser();
+      // v13: jalur pencarian & detail kini HTTP murni — browser TIDAK dihidupkan
+      // di awal; ia diluncurkan malas (lazy) hanya saat fallback/ WA web perlu.
       if (!opts?.skipSearch) {
         await this.searchPhase(job);
         if (!this.alive(job)) { job.progress.phase = "Dibatalkan"; return; }
@@ -881,6 +949,7 @@ export class ScrapeEngine {
       if (!this.alive(job)) { job.progress.phase = "Dibatalkan"; return; }
       await this.whatsappPhase(job);
       if (!this.alive(job)) { job.progress.phase = "Dibatalkan"; return; }
+      this.dedupPhoneEntries(job); // v13.4: gabung listing ganda setelah semua filter
       this.finalize(job);
     } catch (e: any) {
       job.status = "failed";
@@ -1134,10 +1203,11 @@ export class ScrapeEngine {
     this.log(job, "success", `Cek WhatsApp selesai: ${ok} nomor diterima wa.me, ${no} ditolak, ${withPhone.length - ok - no} tidak pasti.`);
   }
 
-  /** finalisasi statistik + status selesai */
-  private finalize(job: ScrapeJob) {
-    // dedup nomor telepon: entri cid berbeda tapi nomor sama = listing ganda usaha yang
-    // sama (muncul berulang di hasil Google) — simpan satu entri terbaik per nomor.
+  /** v13.4: dedup nomor telepon DI AKHIR (setelah seluruh filter selesai) —
+   *  entri cid berbeda tapi nomor sama = listing ganda usaha yang sama (muncul
+   *  berulang di hasil Google): simpan satu entri terbaik per nomor, data
+   *  pelengkap & status prospek dari entri yang dibuang pindah ke yang disimpan. */
+  private dedupPhoneEntries(job: ScrapeJob) {
     const bestByPhone = new Map<string, Place>();
     for (const p of job.places) {
       if (!p.phoneDigits) continue;
@@ -1152,7 +1222,6 @@ export class ScrapeEngine {
       const keeper = bestByPhone.get(p.phoneDigits)!;
       if (keeper !== p) {
         dupPhone++;
-        // status prospek / data pelengkap dari entri yang dibuang pindah ke yang disimpan
         if (p.leadStatus && p.leadStatus !== "baru" && (keeper.leadStatus === "baru" || !keeper.leadStatus)) {
           keeper.leadStatus = p.leadStatus;
           keeper.leadNote = p.leadNote;
@@ -1174,7 +1243,13 @@ export class ScrapeEngine {
       job.places = deduped;
       this.log(job, "info", `Dedup: ${dupPhone} entri dengan nomor telepon ganda digabung (satu entri terlengkap per nomor).`);
     }
+  }
 
+  /** finalisasi statistik + status selesai */
+  private finalize(job: ScrapeJob) {
+    // v13.4: dedup cid berjalan saat serapan hasil (Set O(1) — antar kata kunci
+    // tidak menumpuk); dedup nomor telepon berjalan setelah seluruh filter akhir
+    // (lihat dedupPhoneEntries di runJob). Finalisasi tinggal statistik & selesai.
     const places = job.places;
     const ratings = places.filter((p) => p.rating != null).map((p) => p.rating!);
     job.stats = {

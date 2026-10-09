@@ -64,9 +64,14 @@ mini-services/gmaps-scraper/data/
 /download/
 # cache scraping & verifikasi WhatsApp (boleh dibangun ulang)
 mini-services/gmaps-scraper/cache/
+mini-services/gmaps-scraper/media/
 mini-services/gmaps-scraper/debug/
 # SESI WHATSAPP — kredensial, JANGAN PERNAH di-push
 mini-services/wa-checker/wa-auth/
 # log & pid runtime
 /logs/
 *.pid
+# file eksperimen & artefak sementara
+mini-services/gmaps-scraper/exp-*
+# database template prisma (tidak dipakai aplikasi; tidak ada data di dalamnya)
+prisma/dev.db

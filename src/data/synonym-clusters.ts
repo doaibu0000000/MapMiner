@@ -49,6 +49,7 @@ export const SYNONYM_CLUSTERS: string[][] = [
   // --- Fashion & Pakaian ---
   ["distro", "toko distro", "baju distro", "kaos distro", "toko kaos", "clothing", "butik", "fashion", "toko baju", "toko pakaian", "galeri distro", "outlet distro", "distro clothing", "toko fashion", "pakaian", "toko celana", "kaos", "t-shirt", "hoodie", "jaket", "toko jaket"],
   ["toko sepatu", "sepatu", "toko sandal", "sepatu sandal", "sneakers", "shoe store", "sepatu pria", "sepatu wanita", "sepatu anak", "toko sneakers", "sepatu olahraga", "sneakers store"],
+  ["tas", "toko tas", "toko tas dan koper", "tas gendong", "tas ransel", "tas selempang", "tas jinjing", "tas trolley", "tas koper", "koper", "toko koper", "koper dan tas", "tas wanita", "tas pria", "tas kulit", "tas sekolah", "tas laptop", "tas travel", "tas murah", "tas import", "tas branded", "grosir tas", "tas punggung", "toko bag"],
   ["toko jilbab", "toko hijab", "hijab", "jilbab", "busana muslim", "toko muslim", "gamis", "toko gamis", "hijab store", "toko koko", "koko", "baju koko", "sarung", "peci", "kerudung"],
   ["konveksi", "konveksi kaos", "tukang jahit", "penjahit", "jasa jahit", "jahit baju", "tailor", "vermak", "vermak levis", "jahit jas", "sablon", "sablon kaos", "bordir", "konveksi seragam", "jahit seragam"],
   ["batik", "toko batik", "batik tulis", "batik cap", "pusat batik", "batik jawa", "seragam batik", "tenun", "ulos"],
@@ -111,7 +112,7 @@ export const SYNONYM_CLUSTERS: string[][] = [
   ["travel", "biro perjalanan", "agen travel", "tour travel", "agen tiket", "tiket", "travel antar kota", "shuttle", "travel shuttle"],
   ["umrah", "umroh", "travel umrah", "biro umrah", "haji plus", "paket umroh", "travel haji"],
   ["hotel", "penginapan", "guest house", "homestay", "losmen", "villa", "motel", "wisma", "hotel murah", "hotel melati", "penginapan murah", "guesthouse"],
-  ["kost", "kos kosan", "kos-kosan", "rumah kost", "kontrakan", "kost putri", "kost putra", "sewa kamar", "kontrakan rumah"],
+  ["kost", "kos", "kosan", "kos kosan", "kos-kosan", "kos putri", "kos putra", "rumah kost", "kontrakan", "kost putri", "kost putra", "sewa kamar", "kontrakan rumah"],
   ["sekolah mengemudi", "kursus mengemudi", "les mengemudi", "driving school", "kursus sim", "kursus mobil"],
   ["cleaning service", "jasa kebersihan", "bersih rumah", "pest control", "anti rayap", "basmi rayap", "rayap", "fogging", "jasa bersih rumah"],
   ["tukang kunci", "ganti kunci", "kunci", "duplikat kunci", "servis kunci", "cctv", "pasang cctv", "servis cctv", "kamera cctv", "alarm", "gerbang otomatis", "pintu otomatis"],

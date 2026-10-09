@@ -9,6 +9,7 @@ import { JobStore } from "./store";
 import { buildJobXlsx, buildJobCsv, exportFilename } from "./exporter";
 import { waCheckNumbers } from "./wa";
 import { waServiceStatus, waServicePair, waServiceUnpair } from "./wa-service";
+import { mediaCreate, mediaList, mediaGet, mediaDelete, mediaZip, mediaSetBrowser } from "./media";
 
 /** v10.3: isi waOk utk tempat yang belum dicek (cek berbasis request wa.me — selalu bisa).
  *  persist=true → simpan job ke disk (job asli); false → cek sementara (subset/master). */
@@ -26,8 +27,27 @@ import type { ScrapeJob, ServiceStats, Place, JobStats } from "./types";
 const PORT = 3003;
 
 /** Versi engine — naikkan setiap perubahan kode engine (scraper/parser/exporter).
+ *  v13.4.1: /api/suggest diperketat — blocklist lokasi asing ("singapore", "johor",
+ *  "lucky plaza", …) & junk non-tempat ("near me", "harga", "resep", "logo", …)
+ *  agar saran sinonim sesuai yang dicari.
+ *  v13.4.0 (permintaan pengguna): AMBIL SEMUA dulu — fase detail murni pengumpul
+ *  data tanpa pembuangan di tengah jalan; penyaringan berjalan SETELAHNYA dalam
+ *  satu rangkaian akhir: review minimal → filter telepon → WhatsApp → dedup
+ *  nomor ganda (dedupPhoneEntries) → statistik. Dedup cid antar kata kunci tetap
+ *  O(1) saat serapan (Set) — duplikat lintas kata kunci tetap tidak diambil ganda.
+ *  v13.3.0: pipeline INLINE penuh — selama fase detail, tiap tempat langsung
+ *  dipilah seketika: review minimal (null = 0) → filter telepon (tanpa nomor /
+ *  darat dibuang) → dedup nomor → verifikasi WhatsApp paralel (tidak terdaftar
+ *  dibuang seketika). Jumlah tempat di UI turun live; fase akhir tinggal
+ *  statistik (fast-path WA + filter akhir jadi jaring pengaman no-op).
+ *  v13.2.0: dedup INLINE — cid dicek via Set O(1) saat serapan hasil; nomor telepon
+ *  ganda digabung+ dibuang seketika saat fase detail (absorbDuplicate); finalize()
+ *  tinggal statistik (tidak ada lagi pemilahan duplikat di akhir job).
+ *  v13.1.0: p-limit terpusat (google-guard, GOOGLE_CONCURRENCY=24) + backoff
+ *  adaptif anti-blokir; paginasi pencarian per gelombang paralel; detail
+ *  16 pekerja × 1-2 probe ringan; cache debounced-atomic (bukan tulis per tempat).
  *  Ditampilkan di /health & /api/stats agar UI bisa mendeteksi engine lama. */
-const ENGINE_VERSION = "12.7.0";
+const ENGINE_VERSION = "13.4.2";
 
 type JobOpts = { skipSearch?: boolean; emailScan?: boolean; socialScan?: boolean };
 
@@ -53,6 +73,9 @@ const state: ServiceState =
   });
 
 const { store, engine } = state;
+
+// engine media memakai browser yang sama dengan scraper (satu instance Chromium)
+mediaSetBrowser(() => (engine as any).bm);
 
 // ---- job queue: satu job berjalan pada satu waktu ----
 function enqueueJob(job: ScrapeJob, opts?: JobOpts) {
@@ -334,10 +357,29 @@ const server = Bun.serve({
         const words = new Set(low.split(" "));
         return qWords.every((w) => words.has(w));
       };
-      // saran yang tak berguna utk scraping tempat: pertanyaan/logo/penjelasan, atau
-      // menyebut kota besar lain (akan mengarahkan pencarian keluar dari kota tujuan)
-      const JUNK = ["dari lokasi saya", "bahasa", "artinya", "adalah", "apa itu", "kenapa", "logo", "png", "vektor", "vector", "kartun", "gambar", "ucapan", "prediksi", "contoh"];
-      const METROS = ["jakarta", "surabaya", "bandung", "medan", "semarang", "makassar", "palembang", "tangerang", "depok", "bogor", "bekasi", "malang", "yogyakarta", "surakarta"];
+      // saran yang tak berguna utk scraping tempat: pertanyaan/logo/penjelasan/produk,
+      // atau yang menunjuk lokasi lain — kota besar Indonesia (METROS) & luar negeri
+      // (ASING: "laundry singapore", "bakso johor bahru", "bakso lucky plaza", dst).
+      // v13.4.2: pencocokan KATA-UTUH (bukan substring) — "bag" memblokir "laundry bag"
+      // tanpa mengenai "bagus"; "malang" tidak mengenai "pemalang".
+      const JUNK = [
+        "dari lokasi saya", "bahasa", "artinya", "arti", "adalah", "apa itu", "kenapa", "mengapa", "cara", "tutorial",
+        "logo", "png", "vektor", "vector", "kartun", "gambar", "foto", "wallpaper", "ucapan", "prediksi", "contoh",
+        "lirik", "chord", "wikipedia", "tiktok", "instagram", "facebook", "lowongan", "rekrutmen", "gaji",
+        "near me", "harga", "jadwal", "resep", "kata kata", "puisi", "pantun", "lucu", "bio",
+        "terbaik di dunia", "paling bagus",
+        // produk non-tempat yang kerap muncul di autocomplete ("laundry bag", "deterjen laundry") — kata utuh
+        "bag", "detergen", "detergent", "deterjen", "hamper", "basket", "simbol", "symbol", "parfum", "pewangi", "sabun", "cairan",
+      ];
+      const ASING = [
+        "singapore", "singapura", "johor", "malaysia", "kuala lumpur", "penang", "batam", "brunei", "bangkok",
+        "dubai", "hongkong", "hong kong", "manila", "lucky plaza", "outram", "sembawang", "jurong", "bedok",
+        "tampines", "woodlands", "yishun", "chinatown", "little india", "orchard road",
+      ];
+      const METROS = ["jakarta", "surabaya", "bandung", "medan", "semarang", "makassar", "palembang", "tangerang", "depok", "bogor", "bekasi", "malang", "yogyakarta", "jogja", "surakarta", "cirebon", "cimahi", "karawang", "purwakarta", "denpasar", "balikpapan", "manado", "jawa barat", "jawa tengah", "jawa timur", "banten", "sumatera", "kalimantan", "sulawesi", "kabupaten", "kecamatan"];
+      // saran dinormalkan lalu di-pad spasi → frasa/kata dicocokkan sebagai KATA UTUH
+      const normWords = (s: string) => ` ${s.toLowerCase().replace(/[^a-z0-9\s-]/g, " ").replace(/\s+/g, " ").trim()} `;
+      const wordHitList = (padded: string, list: string[]) => list.some((p) => padded.includes(` ${p} `));
       const out: string[] = [];
       for (const r of results) {
         if (r.status !== "fulfilled") continue;
@@ -349,10 +391,12 @@ const server = Bun.serve({
           if (/\d/.test(s)) continue;
           if (cityRe && s.toLowerCase().includes(cityLow)) s = s.replace(cityRe, "").replace(/\s{2,}/g, " ").trim();
           const low = s.toLowerCase();
+          const padded = normWords(s);
           if (s.length < 3) continue;
           if (low === q.toLowerCase()) continue;
-          if (JUNK.some((p) => low.includes(p))) continue;
-          if (METROS.some((m) => low.includes(m) && m !== cityLow)) continue;
+          if (wordHitList(padded, JUNK)) continue;
+          if (wordHitList(padded, ASING)) continue;
+          if (wordHitList(padded, METROS.filter((m) => m !== cityLow))) continue;
           if (!allWordsHit(low)) continue;
           s = s.replace(/\s+(di|dari|dan|untuk|ke|yang)$/i, "").trim();
           if (s.length < 3) continue;
@@ -394,6 +438,43 @@ const server = Bun.serve({
     if (path === "/api/wa/unpair" && method === "POST") {
       await waServiceUnpair();
       return json({ ok: true });
+    }
+
+    // ---- unduh media tempat (tab Unduh Media): panen foto/video dari link Maps → arsip ZIP ----
+    if (path === "/api/media" && method === "GET") {
+      return json({ ok: true, jobs: mediaList() });
+    }
+    if (path === "/api/media" && method === "POST") {
+      let body: any;
+      try { body = await req.json(); } catch { return json({ ok: false, error: "Body JSON tidak valid" }, 400); }
+      const links: string[] = Array.isArray(body?.links) ? body.links.map((x: any) => String(x)) : [];
+      const r = mediaCreate(links, { webp: body?.webp !== false, preset: body?.preset });
+      if (!r.ok) return json({ ok: false, error: r.error }, r.status);
+      return json({ ok: true, job: r.job }, 201);
+    }
+    const mediaMatch = path.match(/^\/api\/media\/([^/]+)$/);
+    if (mediaMatch) {
+      const id = mediaMatch[1];
+      if (method === "GET") {
+        const job = mediaGet(id);
+        return job ? json({ ok: true, job }) : json({ ok: false, error: "Job media tidak ditemukan" }, 404);
+      }
+      if (method === "DELETE") {
+        return mediaDelete(id) ? json({ ok: true }) : json({ ok: false, error: "Job media tidak ditemukan" }, 404);
+      }
+    }
+    const mediaZipMatch = path.match(/^\/api\/media\/([^/]+)\/zip$/);
+    if (mediaZipMatch && method === "GET") {
+      const f = mediaZip(mediaZipMatch[1]);
+      if (!f) return json({ ok: false, error: "Arsip belum tersedia (job belum selesai / sudah dihapus)" }, 404);
+      const cd = `attachment; filename="${encodeURIComponent(f.filename)}"; filename*=UTF-8''${encodeURIComponent(f.filename)}`;
+      return new Response(Bun.file(f.path), {
+        headers: {
+          "Content-Type": "application/zip",
+          "Content-Disposition": cd,
+          "Access-Control-Allow-Origin": "*",
+        },
+      });
     }
 
     // ---- daftar & buat job ----

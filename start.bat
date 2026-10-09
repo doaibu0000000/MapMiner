@@ -20,7 +20,7 @@ echo ============================================================
 echo.
 
 REM ============================================================
-REM  BOOTSTRAP OTOMATIS — pasang semua kebutuhan bila belum ada
+REM  BOOTSTRAP OTOMATIS - pasang semua kebutuhan bila belum ada
 REM ============================================================
 
 REM ---- 1) Bun (runtime utama semua layanan) ----
@@ -92,7 +92,7 @@ if not exist "mini-services\wa-checker\node_modules" (
     popd
 )
 
-REM ---- 5) Browser Chromium untuk scraper — dilewati bila Chrome/Edge
+REM ---- 5) Browser Chromium untuk scraper - dilewati bila Chrome/Edge
 REM         sudah terpasang di komputer ini (dipakai sebagai cadangan) ----
 set "NEED_BROWSER=1"
 if exist "%LOCALAPPDATA%\ms-playwright" set "NEED_BROWSER=0"
